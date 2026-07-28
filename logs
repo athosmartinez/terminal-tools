@@ -50,6 +50,7 @@ keys() {
     print
     print    "  ↑ / ↓        move                 type       filter"
     print    "  Enter        follow logs          Ctrl-P     pod view"
+    print    "  Ctrl-N       namespace filter     Ctrl-T     cycle sort (name/ns/unready)"
     print    "  ?            this help            Esc        quit"
     print
     print -P "%F{cyan}The workload list auto-refreshes every ${LOGS_REFRESH:-5}s (set LOGS_REFRESH; 0 disables).%f"
@@ -59,6 +60,50 @@ keys() {
     print    "(press q to return to the picker)"
   } | page
 }
+
+# ── picker state (namespace filter + sort) ───────────────────────────────────
+# Header for the workload picker: keybar + ns/sort status (line 1), column
+# labels (line 2). Reads $LOGS_STATE. Paren-free (fzf change-header argument).
+logs_header() {
+  local C=$'\033[36m' D=$'\033[38;5;243m' B=$'\033[1m' R=$'\033[0m' ns sort
+  ns=$(cat $LOGS_STATE/ns 2>/dev/null); sort=$(cat $LOGS_STATE/sort 2>/dev/null)
+  local bar="${C}Enter$R$D follow$R  ${C}^P$R$D pods$R  ${C}^N$R$D ns$R  ${C}^T$R$D sort$R  ${D}? help$R  ${D}Esc$R"
+  bar+="   ${D}ns:$R ${ns:-all}   ${D}sort:$R ${sort:-name}"
+  printf '%s\n%s' "$bar" "$(printf "$B%-20s  %-36s  %-7s  %-7s$R" NAMESPACE WORKLOAD KIND READY)"
+}
+
+# Workload rows honoring the namespace filter + sort in $LOGS_STATE.
+fzf_src() {
+  local nsf srt rows
+  nsf=$(cat $LOGS_STATE/ns 2>/dev/null); srt=$(cat $LOGS_STATE/sort 2>/dev/null)
+  rows=$(collect_workloads)
+  [[ -n $nsf ]] && rows=$(print -r -- "$rows" | awk -F'\t' -v n="$nsf" '$1==n')
+  case $srt in
+    ns)      rows=$(print -r -- "$rows" | sort -t$'\t' -k1,1 -k2,2) ;;
+    unready) rows=$(print -r -- "$rows" | awk -F'\t' '{split($4,r,"/"); print (r[1]+0<r[2]+0?0:1)"\t"$0}' | sort -k1,1 | cut -f2-) ;;
+    *)       rows=$(print -r -- "$rows" | sort -t$'\t' -k2,2) ;;
+  esac
+  print -r -- "$rows" | to_fzf_lines
+}
+
+# Namespace picker → writes $LOGS_STATE/ns (empty = all). Runs under fzf execute.
+pick_ns() {
+  local pick
+  pick=$( { print all; kubectl get ns --no-headers -o custom-columns=N:.metadata.name 2>/dev/null } \
+    | fzf --prompt='namespace> ' --layout=reverse --height=40% ) || return
+  [[ -z $pick ]] && return
+  [[ $pick == all ]] && : > $LOGS_STATE/ns || print -r -- $pick > $LOGS_STATE/ns
+}
+
+# Cycle sort name→ns→unready; print the fzf actions to refresh header + list.
+cycle_sort() {
+  local s=$(cat $LOGS_STATE/sort 2>/dev/null)
+  case $s in name) s=ns;; ns) s=unready;; *) s=name;; esac
+  print -r -- $s > $LOGS_STATE/sort
+  printf 'change-header(%s)+reload(%s --fzf-src)' "$(logs_header)" "$SELF"
+}
+
+sync_hdr() { printf 'change-header(%s)+reload(%s --fzf-src)' "$(logs_header)" "$SELF" }
 
 direct() {
   local q=$1 all rows
@@ -78,7 +123,15 @@ direct() {
 
 interactive() {
   local query=$1
-  local input; input=$(collect_workloads | to_fzf_lines)
+  # Picker state (namespace filter + sort), read by --fzf-src and the header;
+  # exported so the fzf-spawned child dispatches (--pick-ns, --sync, …) see it.
+  LOGS_STATE=$(mktemp -d) || die "mktemp failed"
+  export LOGS_STATE
+  : > $LOGS_STATE/ns
+  print -r -- name > $LOGS_STATE/sort
+  trap 'rm -rf $LOGS_STATE' EXIT
+
+  local input; input=$($SELF --fzf-src)
   [[ -z $input ]] && die "no workloads found — is the cluster reachable? (context: $(kubectl config current-context 2>/dev/null))"
 
   # Auto-refresh: ON by default; LOGS_REFRESH seconds (0 disables). fzf reloads
@@ -91,11 +144,13 @@ interactive() {
   out=$(print -r -- "$input" | fzf --ansi --delimiter="$DELIM" --with-nth=1 \
     --query="$query" --expect=ctrl-p \
     --prompt='logs> ' --layout=reverse --info=inline --pointer='▸' \
-    --header=$'\033[1;36mNAMESPACE             WORKLOAD                              KIND     READY\033[0m\n\033[38;5;243mEnter follow · Ctrl-P pods · ? keys · Esc quit\033[0m' \
+    --header="$(logs_header)" \
     --bind="?:execute($SELF --keys)" \
+    --bind="ctrl-n:execute($SELF --pick-ns)+transform($SELF --sync)" \
+    --bind="ctrl-t:transform($SELF --cycle-sort)" \
     "${rbind[@]}" \
     --preview="$SELF --preview {2} {3} {4}" \
-    --preview-window='right,55%,wrap') || return 0
+    --preview-window='right,45%,wrap') || return 0
 
   key=$(head -1 <<< $out)
   sel=$(sed -n 2p <<< $out)
@@ -119,7 +174,10 @@ while (( $# )); do
     --preview)      shift; do_preview "$@"; exit 0 ;;
     --preview-pod)  shift; do_preview_pod "$@"; exit 0 ;;
     --keys)         keys; exit 0 ;;
-    --fzf-src)      collect_workloads | to_fzf_lines; exit 0 ;;
+    --fzf-src)      fzf_src; exit 0 ;;
+    --pick-ns)      pick_ns; exit 0 ;;
+    --cycle-sort)   cycle_sort; exit 0 ;;
+    --sync)         sync_hdr; exit 0 ;;
     --list)         collect_workloads; exit 0 ;;
     -n)             shift; [[ ${1:-} == <-> ]] || die "-n requires a number"; TAIL=$1 ;;
     -p)             PREV=1 ;;
