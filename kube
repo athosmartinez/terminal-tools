@@ -1,0 +1,311 @@
+#!/usr/bin/env zsh
+#
+# kube — terminal infra cockpit (fzf + kubectl)
+#
+#   kube                 cockpit: problems on top, all workloads below
+#   kube -h | --help     help
+#
+# Keys: Enter logs · ^R restart · ^S scale · ^D describe · ^X del-pod · ^P pods
+#       ^L toggle auto-refresh · F5 reload now · Esc
+# Auto-refresh is on by default (KUBE_REFRESH seconds; 0 starts paused).
+# Every mutating action asks for confirmation. Always uses the current kubectl context.
+#
+# Depends on: kubectl, fzf (brew). Shared code: lib/kubetui.zsh.
+
+emulate -L zsh
+setopt no_nomatch
+
+SELF=${0:A}
+source ${0:A:h}/lib/kubetui.zsh
+source ${0:A:h}/lib/kube-actions.zsh
+source ${0:A:h}/lib/kube-data.zsh
+
+need kubectl "install kubectl first"
+need fzf "brew install fzf"
+
+usage() {
+  cat <<'EOF'
+kube — terminal infra cockpit
+
+USAGE
+  kube               open the multi-view cockpit
+  kube -h | --help   this help
+
+VIEWS (Tab / Shift-Tab to switch)
+  overview  problems + all workloads (image, cpu, mem)
+  pods      all pods (ip, image, cpu, mem, node)
+  nodes     nodes (spot/on-demand, cpu%, mem%, pods)
+  events    cluster Warning events, newest first
+  ingress   host → service routes
+  config    secrets and configmaps
+
+KEYS
+  Enter  primary action     ^D describe+events   ^Y yaml
+  ^R restart  ^S scale  ^X delete  ^P pods
+  ^A     actions menu       ^N namespace scope   ^T cycle sort
+  ^L     toggle auto-refresh (on by default)     F5 reload now
+  ?      help               Esc quit
+
+Auto-refresh: on by default, every KUBE_REFRESH seconds (default 5; 0 starts
+paused). Ctrl-L pauses/resumes it. The tab bar shows the current live status.
+Type to filter the current view (fuzzy). ^N narrows to one namespace.
+Every action prints the real kubectl command before running; mutations confirm
+first. In the actions menu, Ctrl-Y copies the command to the clipboard.
+Always uses the current kubectl context.
+EOF
+}
+
+# Runs a blocking follow so Ctrl-C returns to the loop instead of killing kube.
+# Parent catches INT (survives); the subshell resets INT to default so kubectl
+# (its child) dies on Ctrl-C. follow_* return 130 on interrupt.
+guarded() {
+  trap 'true' INT
+  ( trap - INT; "$@" )
+  trap - INT
+}
+
+VIEWS=(overview pods nodes events ingress config)
+
+# Top tab bar: current view highlighted, plus namespace scope, sort and live
+# status. Reads cockpit state from $KUBE_STATE files (view/ns/sort/live), since
+# child dispatches (--nav, --cycle-sort, ...) run in separate processes and
+# can't share cockpit()'s dynamic scope. Output MUST stay paren-free (fzf
+# change-header() argument).
+tab_bar() {
+  local v out="" livestr
+  local view ns sort live
+  view=$(cat $KUBE_STATE/view 2>/dev/null)
+  ns=$(cat $KUBE_STATE/ns 2>/dev/null)
+  sort=$(cat $KUBE_STATE/sort 2>/dev/null)
+  live=$(cat $KUBE_STATE/live 2>/dev/null)
+  for v in $VIEWS; do
+    if [[ $v == $view ]]; then out+=$'\033[1;36m'"$v"$'\033[0m'" │ "
+    else out+=$'\033[38;5;243m'"$v"$'\033[0m'" │ "; fi
+  done
+  (( live )) && livestr=$'\033[32m'"${KUBE_REFRESH:-5}s"$'\033[0m' || livestr=$'\033[38;5;243m'"off"$'\033[0m'
+  print -r -- "${out%│ }   "$'\033[38;5;243m'"ns:"$'\033[0m'" ${ns:-all}   "$'\033[38;5;243m'"sort:"$'\033[0m'" $sort   "$'\033[38;5;243m'"live:"$'\033[0m'" $livestr"
+}
+
+# Contextual keybar (header line 2): only the action keys that apply to the
+# current view, plus the always-available globals. Keys cyan, labels dim.
+# Paren-free (fzf change-header argument).
+keybar() {
+  local view=$1 pair k l out="" C=$'\033[36m' D=$'\033[38;5;243m' R=$'\033[0m'
+  local -a ctx
+  case $view in
+    overview) ctx=(Enter:logs '^R:restart' '^S:scale' '^D:describe' '^Y:yaml' '^X:delete' '^P:pods' '^A:more') ;;
+    pods)     ctx=(Enter:logs '^D:describe' '^Y:yaml' '^X:delete' '^P:pods' '^A:more') ;;
+    nodes)    ctx=(Enter:pods '^D:describe' '^Y:yaml' '^A:cordon/drain') ;;
+    events)   ctx=(Enter:describe '^Y:yaml') ;;
+    ingress)  ctx=(Enter:open '^D:describe' '^Y:yaml' '^X:delete') ;;
+    config)   ctx=(Enter:reveal '^D:describe' '^Y:yaml' '^X:delete') ;;
+    *)        ctx=(Enter:act) ;;
+  esac
+  for pair in $ctx; do k=${pair%%:*}; l=${pair#*:}; out+="$C$k$R$D $l$R  "; done
+  out+="$D│$R  "
+  for pair in '^N:ns' '^T:sort' '^L:live' 'Tab:view' '?:help' 'Esc:quit'; do
+    k=${pair%%:*}; l=${pair#*:}; out+="$D$k $l$R  "
+  done
+  print -rn -- "${out%  }"
+}
+
+# Column labels (header line 3), aligned to each feed's column widths. Bold.
+# Paren-free.
+col_header() {
+  local view=$1 B=$'\033[1m' R=$'\033[0m'
+  case $view in
+    overview) printf "$B%-18s  %-26s  %-6s  %-6s  %-18s  %6s %8s$R" NAMESPACE NAME KIND READY IMAGE CPU MEM ;;
+    pods)     printf "$B%-15s  %-32s  %-5s  %-13s  %-4s  %-15s  %-16s  %6s %8s  %-20s$R" NAMESPACE POD READY STATUS RST IP IMAGE CPU MEM NODE ;;
+    nodes)    printf "$B%-44s  %-9s  %-9s  %s$R" NODE STATUS TYPE "USAGE (cpu / mem / pods)" ;;
+    events)   printf "$B%-20s %-14s %-30s %s$R" REASON NAMESPACE OBJECT MESSAGE ;;
+    ingress)  printf "$B%-16s %-30s %-42s %s$R" NAMESPACE NAME HOSTS TLS ;;
+    config)   printf "$B%-7s %-16s %-40s %s$R" TYPE NAMESPACE NAME DETAIL ;;
+    *)        print -rn -- "" ;;
+  esac
+}
+
+# The full 3-line cockpit header: tab bar · contextual keys · column labels.
+# Used by the initial --header and re-emitted by every change-header. Paren-free.
+full_header() {
+  local view; view=$(cat $KUBE_STATE/view 2>/dev/null); view=${view:-overview}
+  printf '%s\n%s\n%s' "$(tab_bar)" "$(keybar $view)" "$(col_header $view)"
+}
+
+help_overlay() {
+  { print -P "%B%F{cyan}kube — keys%f%b"; print
+    print "  Tab / Shift-Tab   switch view          Ctrl-N   namespace scope"
+    print "  Enter             primary action       Ctrl-T   cycle sort (metric views)"
+    print "  Ctrl-D describe   Ctrl-Y yaml          Ctrl-R restart   Ctrl-S scale"
+    print "  Ctrl-X delete     Ctrl-P pods          Ctrl-A   actions menu"
+    print "  Ctrl-L auto-refresh  F5 reload now     ?  help          Esc quit"
+    print; print -P "%F{cyan}Auto-refresh is ON by default (every ${KUBE_REFRESH:-5}s). Ctrl-L pauses/resumes it;%f"
+    print -P "%F{cyan}set KUBE_REFRESH=<seconds> to change the interval (0 starts paused).%f"
+    print -P "%F{cyan}Type to filter the current view (fuzzy). Ctrl-N narrows to a namespace.%f"
+    print -P "%F{cyan}Every action prints the real kubectl command before running.%f"
+    print -P "%F{cyan}In the actions menu, Ctrl-Y copies the command to the clipboard.%f"
+  } | page
+}
+
+# Namespace scope picker; writes $KUBE_STATE/ns (empty = all). Runs under fzf
+# `execute`, so its own nested fzf has the terminal.
+pick_ns() {
+  local pick
+  pick=$( { print all; kubectl get ns --no-headers -o custom-columns=N:.metadata.name 2>/dev/null } \
+    | fzf --prompt='namespace> ' --layout=reverse --height=40% ) || return
+  [[ -z $pick ]] && return
+  [[ $pick == all ]] && : > $KUBE_STATE/ns || print -r -- $pick > $KUBE_STATE/ns
+}
+
+cockpit() {
+  # File-based cockpit state: the single fzf's key bindings spawn child
+  # dispatches (--feed/--nav/--act/...) that read/write these files instead of
+  # sharing this function's scope. Exported so children inherit the path.
+  KUBE_STATE=$(mktemp -d) || die "mktemp failed"
+  export KUBE_STATE
+  print -r -- overview > $KUBE_STATE/view
+  : > $KUBE_STATE/ns
+  print -r -- name > $KUBE_STATE/sort
+  local -i REFRESH=${KUBE_REFRESH:-5}
+  local start_paused=""
+  (( REFRESH <= 0 )) && { REFRESH=5; start_paused=1 }
+  print -r -- $(( start_paused ? 0 : 1 )) > $KUBE_STATE/live
+
+  # Disable flow control so Ctrl-S reaches fzf (not XOFF). Restore stty + remove
+  # the state dir on exit. Interactive session only — child dispatches must not
+  # touch the terminal (it corrupts fzf's display).
+  if [[ -t 0 ]]; then
+    _kube_ixon=$(stty -g 2>/dev/null)
+    stty -ixon 2>/dev/null
+  fi
+  trap '[[ -n $_kube_ixon ]] && stty $_kube_ixon 2>/dev/null; rm -rf $KUBE_STATE' EXIT
+
+  local hdr; hdr="$(full_header)"
+  local -a paused_bind=()
+  [[ -n $start_paused ]] && paused_bind=(--bind='start:unbind(load)')
+
+  # ONE persistent fzf for the whole session. Every interaction is an in-place
+  # binding: transform/reload swap the list, prompt and header without relaunch;
+  # execute runs an action (with the terminal) then --sync reloads to reflect it.
+  $SELF --feed | fzf --ansi --delimiter="$DELIM" --with-nth=1 \
+    --prompt='overview> ' --layout=reverse --info=inline --pointer='▸' --header=$hdr \
+    --preview="$SELF --preview {2} {3} {4} {5}" --preview-window='right,40%,wrap' \
+    --bind="tab:transform($SELF --nav next)" \
+    --bind="btab:transform($SELF --nav prev)" \
+    --bind="ctrl-t:transform($SELF --cycle-sort)" \
+    --bind="ctrl-l:transform($SELF --toggle-live)" \
+    --bind="ctrl-n:execute($SELF --pick-ns)+transform($SELF --sync)" \
+    --bind="f5:reload($SELF --feed)" \
+    --bind="load:reload:sleep $REFRESH; $SELF --feed" \
+    "${paused_bind[@]}" \
+    --bind="enter:execute($SELF --act enter {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-d:execute($SELF --act ctrl-d {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-y:execute($SELF --act ctrl-y {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-r:execute($SELF --act ctrl-r {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-s:execute($SELF --act ctrl-s {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-x:execute($SELF --act ctrl-x {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-p:execute($SELF --act ctrl-p {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="ctrl-a:execute($SELF --act ctrl-a {2} {3} {4} {5})+transform($SELF --sync)" \
+    --bind="?:execute($SELF --act help {2} {3} {4} {5})"
+}
+
+# Runs the interactive action bound to <key> for the selected row. Called by the
+# --act dispatch under fzf `execute` (has the terminal). Handles the per-type
+# primary action mapping plus ctrl-a / ? / ctrl-p.
+act_dispatch() {
+  local key=$1 type=$2 ns=$3 kind=$4 name=$5 id=""
+  [[ -z $type || $type == sep || $type == none ]] && return 0
+  case $key in
+    ctrl-a) actions_menu "$type" "$ns" "$kind" "$name"; return ;;
+    help)   help_overlay; return ;;
+    ctrl-p) guarded pods_view "$type" "$ns" "$kind" "$name"; return ;;
+    enter)
+      case $type in
+        event)   guarded kubectl describe $kind $name -n $ns 2>&1 | page; return ;;
+        ingress) id=open-url ;; secret) id=reveal ;; cm) id=view-cm ;;
+        node)    id=pods-on ;; *) id=logs ;;
+      esac ;;
+    ctrl-d) id=describe ;; ctrl-y) id=yaml ;; ctrl-r) id=restart ;;
+    ctrl-s) id=scale ;; ctrl-x) [[ $type == pod ]] && id=delete-pod || id=del-res ;;
+  esac
+  [[ -z $id ]] && return
+  applies $id "$type" "$kind" || { print -P "%F{yellow}${A_LABEL[$id]:-action} not available here%f"; sleep 1; return }
+  run_action $id "$type" "$ns" "$kind" "$name"
+}
+
+# Routes fzf preview by row type. Args: type ns kind name
+kube_preview() {
+  local type=$1 ns=$2 kind=$3 name=$4
+  case $type in
+    pod)     do_preview_pod $ns $name ;;
+    wl)      do_preview $ns $kind $name ;;
+    node)    do_preview_node $name ;;
+    event)   kubectl get events -n $ns --field-selector involvedObject.name=$name --sort-by=.lastTimestamp 2>/dev/null | tail -20 ;;
+    ingress) kubectl describe ingress $name -n $ns 2>/dev/null | head -45 ;;
+    secret|cm) kubectl describe $type $name -n $ns 2>/dev/null | head -45 ;;
+    job)     kubectl describe job $name -n $ns 2>/dev/null | head -40 ;;
+    *)       print -- "" ;;
+  esac
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+case ${1:-} in
+  --cmd)          shift; cmd_argv "$@"; print -r -- "${CMD[*]}" ;;
+  --applies)      shift; applies "$@" && print yes || print no ;;
+  --desc)         shift; desc_for "$1" ;;
+  --problems)     shift; collect_problems ;;
+  --feed)
+    shift
+    local v=${1:-}
+    if [[ -z $v && -n $KUBE_STATE ]]; then v=$(cat $KUBE_STATE/view 2>/dev/null); fi
+    v=${v:-overview}
+    if [[ -n $KUBE_STATE ]]; then
+      export KUBE_NS=$(cat $KUBE_STATE/ns 2>/dev/null)
+      local s=$(cat $KUBE_STATE/sort 2>/dev/null); export KUBE_SORT=${s:-name}
+    fi
+    local out; out=$(feed_$v)
+    if [[ -z $out ]]; then
+      printf 'no rows%s%s%s%s%s%s%s%s\n' "$DELIM" none "$DELIM" "" "$DELIM" "" "$DELIM" ""
+    else
+      print -r -- "$out"
+    fi ;;
+  --nav)
+    shift; local dir=$1 cur nx i n=$#VIEWS
+    cur=$(cat $KUBE_STATE/view 2>/dev/null); i=${VIEWS[(i)$cur]}
+    if [[ $dir == prev ]]; then nx=$(( (i + n - 2) % n + 1 )); else nx=$(( i % n + 1 )); fi
+    local v=${VIEWS[$nx]}; print -r -- $v > $KUBE_STATE/view
+    printf 'change-prompt(%s> )+change-header(%s)+reload(%s --feed)' "$v" "$(full_header)" "$SELF" ;;
+  --cycle-sort)
+    local s=$(cat $KUBE_STATE/sort 2>/dev/null)
+    case $s in name) s=cpu;; cpu) s=mem;; mem) s=restarts;; *) s=name;; esac
+    print -r -- $s > $KUBE_STATE/sort
+    printf 'change-header(%s)+reload(%s --feed)' "$(full_header)" "$SELF" ;;
+  --toggle-live)
+    local l=$(cat $KUBE_STATE/live 2>/dev/null); l=$(( ! ${l:-1} ))
+    print -r -- $l > $KUBE_STATE/live
+    if (( l )); then printf 'rebind(load)+change-header(%s)+reload(%s --feed)' "$(full_header)" "$SELF"
+    else printf 'unbind(load)+change-header(%s)' "$(full_header)"; fi ;;
+  --sync)         rm -f $KUBE_STATE/pv.* 2>/dev/null
+                  printf 'change-header(%s)+reload(%s --feed)' "$(full_header)" "$SELF" ;;
+  --act)          shift; act_dispatch "$@" ;;
+  --pick-ns)      pick_ns ;;
+  --preview)      shift
+    # Cache preview output per row so the auto-refresh reload does not re-run
+    # kubectl (and visibly repaint the pane) every cycle. TTL KUBE_PREVIEW_TTL
+    # seconds (default 20); --sync (after actions) invalidates. The cache lives
+    # in the session state dir and dies with it.
+    if [[ -n $KUBE_STATE && -d $KUBE_STATE ]]; then
+      local cf=$KUBE_STATE/pv.${1:-x}.${2:-x}.${3:-x}.${4:-x} mt=0
+      [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
+      if (( $(date +%s) - mt < ${KUBE_PREVIEW_TTL:-20} )); then
+        cat $cf
+      else
+        kube_preview "$@" | tee $cf.$$ && mv $cf.$$ $cf
+      fi
+    else
+      kube_preview "$@"
+    fi ;;
+  --preview-pod)  shift; do_preview_pod "$@" ;;
+  -h|--help)      usage ;;
+  '')             cockpit ;;
+  *)              die "unknown argument: $1 (see kube -h)" ;;
+esac

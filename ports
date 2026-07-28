@@ -1,0 +1,272 @@
+#!/usr/bin/env zsh
+#
+# ports — view, search and kill processes listening on TCP ports (macOS)
+#
+#   ports              open the interactive picker (fzf)
+#   ports <query>      show listening ports matching a port / name / PID
+#   ports kill <query> kill whatever matches (with confirmation)
+#   ports -h|--help    show help
+#
+# Depends on: lsof (system), fzf (brew).
+
+emulate -L zsh
+setopt no_nomatch
+
+SELF=${0:A}
+DELIM=$'\037'          # unit separator: hidden field delimiter for fzf
+MYUID=$(id -u)
+
+# ── data collection ──────────────────────────────────────────────────────────
+# Emits deduped rows, one per (pid,port):  port \t command \t pid \t user \t uid
+collect_raw() {
+  lsof -nP +c 0 -iTCP -sTCP:LISTEN -FpcnuL 2>/dev/null | awk '
+    /^p/ { pid  = substr($0, 2) }
+    /^c/ { cmd  = substr($0, 2) }
+    /^u/ { uid  = substr($0, 2) }
+    /^L/ { user = substr($0, 2) }
+    /^n/ {
+      name = substr($0, 2)
+      n = split(name, a, ":")
+      port = a[n]
+      if (port !~ /^[0-9]+$/) next
+      key = pid ":" port
+      if (!seen[key]++) print port "\t" cmd "\t" pid "\t" user "\t" uid
+    }
+  ' | sort -t$'\t' -k1,1n -k3,3n
+}
+
+# Formats raw rows into fzf lines:  <aligned display>\037port\037pid\037uid\037cmd
+# PORT is bold, PROCESS gets a cycling color per command (spot instances of
+# the same program at a glance), PID is dimmed, USER turns yellow when the
+# process belongs to another user — a heads-up before killing system daemons.
+# Padding is applied before coloring so ANSI never breaks column alignment.
+to_fzf_lines() {
+  awk -F'\t' -v d="$DELIM" -v me="$MYUID" '
+    BEGIN { n = split("36 32 35 34 31", pal, " ") }
+    {
+      if (!($2 in c)) c[$2] = pal[(i++ % n) + 1]
+      uc = ($5 == me) ? "38;5;243" : "33"
+      printf "\033[1m%-6s\033[0m  \033[%sm%-28.28s\033[0m  \033[38;5;243m%-7s\033[0m  \033[%sm%-9s\033[0m%s%s%s%s%s%s%s%s\n",
+        $1, c[$2], $2, $3, uc, $4,  d, $1, d, $3, d, $5, d, $2
+    }
+  '
+}
+
+# Prints an aligned table (header + rows) from raw rows on stdin.
+# Colored like the picker when stdout is a terminal; plain when piped.
+print_table() {
+  if [[ -t 1 ]]; then
+    print -P "%B%F{cyan}PORT    PROCESS                       PID      USER%f%b"
+    awk -F'\t' -v me="$MYUID" '
+      BEGIN { n = split("36 32 35 34 31", pal, " ") }
+      {
+        if (!($2 in c)) c[$2] = pal[(i++ % n) + 1]
+        uc = ($5 == me) ? "38;5;243" : "33"
+        printf "\033[1m%-6s\033[0m  \033[%sm%-28.28s\033[0m  \033[38;5;243m%-7s\033[0m  \033[%sm%-9s\033[0m\n",
+          $1, c[$2], $2, $3, uc, $4
+      }
+    '
+  else
+    print -- "PORT    PROCESS                       PID      USER"
+    awk -F'\t' '{ printf "%-6s  %-28.28s  %-7s  %-9s\n", $1, $2, $3, $4 }'
+  fi
+}
+
+# ── preview pane (called by fzf as: ports --preview <pid>) ───────────────────
+do_preview() {
+  local pid=$1
+  if ! ps -p "$pid" >/dev/null 2>&1; then
+    print -- "Process $pid no longer exists."
+    return
+  fi
+  local user etime cmd
+  user=$(ps -p "$pid" -o user= 2>/dev/null | tr -d ' ')
+  etime=$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')
+  cmd=$(ps -p "$pid" -o command= 2>/dev/null)
+  print -P "%F{cyan}PID:%f      $pid"
+  print -P "%F{cyan}User:%f     $user"
+  print -P "%F{cyan}Uptime:%f   $etime"
+  print -P "%F{cyan}Command:%f  $cmd"
+  print -- ""
+  print -P "%B%F{cyan}Listening ports:%f%b"
+  lsof -nP -a -p "$pid" -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print "  " $9}' | sort -u
+}
+
+# ── keybindings help (shown by pressing ? in the picker) ─────────────────────
+keys() {
+  local pager
+  if command -v less >/dev/null 2>&1; then pager=(less -R); else pager=(cat); fi
+  {
+    print -P "%B%F{cyan}ports — keys%f%b"
+    print
+    print    "  ↑ / ↓        move                 type       filter"
+    print    "  Tab          multi-select         Enter      kill selected"
+    print    "  ?            this help            Esc        cancel"
+    print
+    print -P "%F{cyan}The list auto-refreshes every ${PORTS_REFRESH:-4}s (set PORTS_REFRESH; 0 disables).%f"
+    print -P "%F{cyan}Kills are confirmed first: SIGTERM, then SIGKILL after ~2s if needed.%f"
+    print -P "%F{cyan}Every kill prints the real command (\$ kill -TERM <pid>) before running.%f"
+    print
+    print    "(press q to return to the picker)"
+  } | $pager
+}
+
+# ── confirmation (always reads from the terminal, never a pipe) ──────────────
+confirm() {
+  local prompt=$1 reply
+  read -q "reply?$prompt [y/N] " </dev/tty
+  print
+  [[ $reply == [yY] ]]
+}
+
+# ── kill one process: SIGTERM, wait ~2s, then SIGKILL if needed ──────────────
+kill_one() {
+  local pid=$1 label=$2 uid=$3
+
+  if [[ -n $uid && $uid != $MYUID ]]; then
+    print -P "%F{yellow}⚠  $label is owned by another user (uid $uid) — may be a system process.%f"
+    confirm "Really try to kill it?" || { print -- "Skipped $label"; return }
+  fi
+
+  print -P "%F{cyan}\$%f kill -TERM $pid"
+  if ! kill -TERM "$pid" 2>/dev/null; then
+    if kill -0 "$pid" 2>/dev/null; then
+      print -P "%F{red}✗  Permission denied for $label (PID $pid) — try: sudo kill -9 $pid%f"
+    else
+      print -P "%F{green}✓  $label was already gone%f"
+    fi
+    return
+  fi
+
+  local i
+  for i in 1 2 3 4; do
+    kill -0 "$pid" 2>/dev/null || { print -P "%F{green}✓  Killed $label (SIGTERM)%f"; return }
+    sleep 0.5
+  done
+
+  print -P "%F{cyan}\$%f kill -KILL $pid"
+  kill -KILL "$pid" 2>/dev/null
+  sleep 0.3
+  if kill -0 "$pid" 2>/dev/null; then
+    print -P "%F{red}✗  Could not kill $label (PID $pid) — try: sudo kill -9 $pid%f"
+  else
+    print -P "%F{green}✓  Killed $label (SIGKILL)%f"
+  fi
+}
+
+# ── kill every pid|port|uid|cmd target in the given lines ────────────────────
+# Each line: pid <TAB> port <TAB> uid <TAB> cmd
+kill_targets() {
+  local lines=$1
+  [[ -z $lines ]] && { print -- "Nothing to kill."; return }
+
+  print -P "%B%F{red}About to kill:%f%b"
+  print -r -- "$lines" | awk -F'\t' '{ printf "  • \033[1m%-28s\033[0m port \033[1m%-6s\033[0m PID \033[38;5;243m%s\033[0m\n", $4, $2, $1 }'
+  print
+  confirm "Proceed?" || { print -- "Cancelled."; return }
+
+  local pid port uid cmd
+  while IFS=$'\t' read -r pid port uid cmd; do
+    [[ -z $pid ]] && continue
+    kill_one "$pid" "$cmd on port $port" "$uid"
+  done <<< "$lines"
+}
+
+# ── interactive picker ───────────────────────────────────────────────────────
+interactive() {
+  local fzf_input
+  fzf_input=$(collect_raw | to_fzf_lines)
+  if [[ -z $fzf_input ]]; then
+    print -- "No processes are listening on any TCP port."
+    return
+  fi
+
+  # Auto-refresh: ON by default; PORTS_REFRESH seconds (0 disables). fzf reloads
+  # the list in place (load→reload loop), keeping the query and any Tab marks on
+  # rows that still exist.
+  local -i refresh=${PORTS_REFRESH:-4}
+  local -a rbind
+  (( refresh > 0 )) && rbind=(--bind="load:reload:sleep $refresh; $SELF --fzf-src")
+
+  local selection
+  selection=$(print -r -- "$fzf_input" | fzf --ansi --multi \
+    --delimiter="$DELIM" --with-nth=1 \
+    --prompt='ports> ' --layout=reverse --info=inline --pointer='▸' --marker='✗' \
+    --header=$'\033[1;36mPORT    PROCESS                       PID      USER\033[0m\n\033[38;5;243m↑↓ move · type filter · Tab multi · Enter kill · ? keys · Esc cancel\033[0m' \
+    --bind="?:execute($SELF --keys)" \
+    "${rbind[@]}" \
+    --preview="$SELF --preview {3}" \
+    --preview-window='right,50%,wrap') || return 0
+
+  [[ -z $selection ]] && return 0
+
+  # Turn selected fzf lines back into  pid \t port \t uid \t cmd
+  local targets
+  targets=$(print -r -- "$selection" | awk -F"$DELIM" 'NF>=5 { print $3 "\t" $2 "\t" $4 "\t" $5 }')
+  kill_targets "$targets"
+}
+
+# ── non-interactive search: match port == q, or pid == q, or cmd contains q ──
+# Prints matching raw rows (port\tcmd\tpid\tuser\tuid) on stdout.
+match_rows() {
+  local q=$1
+  collect_raw | awk -F'\t' -v q="$q" '
+    tolower($1)==tolower(q) || $3==q || index(tolower($2), tolower(q)) { print }
+  '
+}
+
+search() {
+  local q=$1
+  local rows; rows=$(match_rows "$q")
+  if [[ -z $rows ]]; then
+    print -- "No listening port matches \"$q\"."
+    return 1
+  fi
+  print -r -- "$rows" | print_table
+}
+
+direct_kill() {
+  local q=$1
+  if [[ -z $q ]]; then
+    interactive
+    return
+  fi
+  local rows; rows=$(match_rows "$q")
+  if [[ -z $rows ]]; then
+    print -- "No listening port matches \"$q\" — nothing to kill."
+    return 1
+  fi
+  local targets
+  targets=$(print -r -- "$rows" | awk -F'\t' '{ print $3 "\t" $1 "\t" $5 "\t" $2 }')
+  kill_targets "$targets"
+}
+
+usage() {
+  cat <<'EOF'
+ports — view, search and kill processes listening on TCP ports
+
+USAGE
+  ports                 open the interactive picker (arrows, type to filter)
+  ports <query>         list listening ports matching a port, name or PID
+  ports kill [<query>]  kill matches; no query opens the picker to choose
+  ports -h | --help     show this help
+
+PICKER KEYS
+  ↑ / ↓     move          type      filter
+  Tab       multi-select  Enter     kill selected
+  ?         show keys     Esc       cancel
+
+Kills are confirmed first, sent SIGTERM, then SIGKILL after ~2s if needed.
+EOF
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+case ${1:-} in
+  --preview)      shift; do_preview "$@" ;;
+  --keys)         keys ;;
+  --fzf-src)      collect_raw | to_fzf_lines ;;
+  kill)           shift; direct_kill "${1:-}" ;;
+  -h|--help)      usage ;;
+  '')             interactive ;;
+  *)              search "$1" ;;
+esac

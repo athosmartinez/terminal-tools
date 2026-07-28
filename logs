@@ -1,0 +1,140 @@
+#!/usr/bin/env zsh
+#
+# logs — follow Kubernetes workload logs interactively (fzf + kubectl)
+#
+#   logs                 interactive picker: deployments/statefulsets/daemonsets
+#   logs <query>         1 match → follow immediately; several → pre-filtered picker
+#   logs -n <N> [query]  initial history lines (default 100)
+#   logs -p [query]      logs of a pod's PREVIOUS container (CrashLoop), no follow
+#   logs -h | --help     help
+#
+# Picker: Enter follow · Ctrl-P pod view · Esc quit
+# Following: reconnects on its own when the stream dies; Ctrl-C quits.
+#
+# Depends on: kubectl, fzf (brew). Shared code: lib/kubetui.zsh.
+
+emulate -L zsh
+setopt no_nomatch
+
+SELF=${0:A}
+source ${0:A:h}/lib/kubetui.zsh
+
+need kubectl "install kubectl first"
+need fzf "brew install fzf"
+
+usage() {
+  cat <<'EOF'
+logs — follow Kubernetes workload logs interactively
+
+USAGE
+  logs                 interactive picker (arrows, type to filter)
+  logs <query>         1 match → follow immediately; several → pre-filtered picker
+  logs -n <N> [query]  initial history lines (default 100)
+  logs -p [query]      logs of a pod's PREVIOUS container (CrashLoop), no follow
+  logs -h | --help     this help
+
+PICKER
+  ↑/↓ move · type to filter · Enter follow · Ctrl-P pod view · ? keys · Esc quit
+  The list auto-refreshes every LOGS_REFRESH seconds (default 5; 0 disables).
+
+FOLLOWING
+  All pods of the workload, each line prefixed with the pod name (one color per pod).
+  If the stream dies (deploy, restart), it reconnects on its own. Ctrl-C quits.
+  Always uses the current kubectl context.
+EOF
+}
+
+# ── keybindings help (shown by pressing ? in the picker) ─────────────────────
+keys() {
+  { print -P "%B%F{cyan}logs — keys%f%b"
+    print
+    print    "  ↑ / ↓        move                 type       filter"
+    print    "  Enter        follow logs          Ctrl-P     pod view"
+    print    "  ?            this help            Esc        quit"
+    print
+    print -P "%F{cyan}The workload list auto-refreshes every ${LOGS_REFRESH:-5}s (set LOGS_REFRESH; 0 disables).%f"
+    print -P "%F{cyan}Following: all pods of the workload, one color per pod; auto-reconnect.%f"
+    print -P "%F{cyan}Ctrl-C stops following. Every follow prints the real \$ kubectl logs -f command.%f"
+    print
+    print    "(press q to return to the picker)"
+  } | page
+}
+
+direct() {
+  local q=$1 all rows
+  all=$(collect_workloads)
+  [[ -z $all ]] && die "no workloads found — is the cluster reachable? (context: $(kubectl config current-context 2>/dev/null))"
+  rows=$(print -r -- $all | awk -F'\t' -v q="${q:l}" \
+    'index(tolower($1), q) || index(tolower($2), q)')
+  [[ -z $rows ]] && die "no workload matches \"$q\""
+  if (( $(print -r -- $rows | grep -c '') == 1 )); then
+    local ns name kind ready
+    IFS=$'\t' read -r ns name kind ready <<< $rows
+    follow_workload $ns $kind $name $TAIL
+  else
+    interactive $q
+  fi
+}
+
+interactive() {
+  local query=$1
+  local input; input=$(collect_workloads | to_fzf_lines)
+  [[ -z $input ]] && die "no workloads found — is the cluster reachable? (context: $(kubectl config current-context 2>/dev/null))"
+
+  # Auto-refresh: ON by default; LOGS_REFRESH seconds (0 disables). fzf reloads
+  # the workload list in place (load→reload loop), keeping the query and cursor.
+  local -i refresh=${LOGS_REFRESH:-5}
+  local -a rbind
+  (( refresh > 0 )) && rbind=(--bind="load:reload:sleep $refresh; $SELF --fzf-src")
+
+  local out key sel
+  out=$(print -r -- "$input" | fzf --ansi --delimiter="$DELIM" --with-nth=1 \
+    --query="$query" --expect=ctrl-p \
+    --prompt='logs> ' --layout=reverse --info=inline --pointer='▸' \
+    --header=$'\033[1;36mNAMESPACE             WORKLOAD                              KIND     READY\033[0m\n\033[38;5;243mEnter follow · Ctrl-P pods · ? keys · Esc quit\033[0m' \
+    --bind="?:execute($SELF --keys)" \
+    "${rbind[@]}" \
+    --preview="$SELF --preview {2} {3} {4}" \
+    --preview-window='right,55%,wrap') || return 0
+
+  key=$(head -1 <<< $out)
+  sel=$(sed -n 2p <<< $out)
+
+  local _ ns kind name
+  [[ -n $sel ]] && IFS=$DELIM read -r _ ns kind name <<< $sel
+
+  if [[ $key == ctrl-p ]]; then
+    pods_picker "${ns:+$ns }" follow
+    return
+  fi
+  [[ -z $sel ]] && return 0
+  follow_workload $ns $kind $name $TAIL
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+PREV=0
+POS=()
+while (( $# )); do
+  case $1 in
+    --preview)      shift; do_preview "$@"; exit 0 ;;
+    --preview-pod)  shift; do_preview_pod "$@"; exit 0 ;;
+    --keys)         keys; exit 0 ;;
+    --fzf-src)      collect_workloads | to_fzf_lines; exit 0 ;;
+    --list)         collect_workloads; exit 0 ;;
+    -n)             shift; [[ ${1:-} == <-> ]] || die "-n requires a number"; TAIL=$1 ;;
+    -p)             PREV=1 ;;
+    -h|--help)      usage; exit 0 ;;
+    -*)             die "unknown flag: $1 (see logs -h)" ;;
+    *)              POS+=("$1") ;;
+  esac
+  shift
+done
+
+q=${POS[1]:-}
+if (( PREV )); then
+  pods_picker "$q" previous
+elif [[ -z $q ]]; then
+  interactive ""
+else
+  direct "$q"
+fi

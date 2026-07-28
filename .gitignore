@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# local rollback/backup copies (kube.part1-base, kube.pre13, *.bak, …)
+*.bak
+*.part1-base
+*.pre*
+kube.pre13
