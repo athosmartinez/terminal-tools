@@ -195,7 +195,7 @@ cockpit() {
     --bind="ctrl-l:transform($SELF --toggle-live)" \
     --bind="ctrl-n:execute($SELF --pick-ns)+transform($SELF --sync)" \
     --bind="f5:reload($SELF --feed)" \
-    --bind="load:reload:sleep $REFRESH; $SELF --feed" \
+    --bind="load:reload:sleep $REFRESH; $SELF --auto-feed" \
     "${paused_bind[@]}" \
     --bind="enter:execute($SELF --act enter {2} {3} {4} {5})+transform($SELF --sync)" \
     --bind="ctrl-d:execute($SELF --act ctrl-d {2} {3} {4} {5})+transform($SELF --sync)" \
@@ -213,10 +213,10 @@ cockpit() {
 # primary action mapping plus ctrl-a / ? / ctrl-p.
 act_dispatch() {
   local key=$1 type=$2 ns=$3 kind=$4 name=$5 id=""
+  [[ $key == help ]] && { help_overlay; return }   # help works even on an empty list
   [[ -z $type || $type == sep || $type == none ]] && return 0
   case $key in
     ctrl-a) actions_menu "$type" "$ns" "$kind" "$name"; return ;;
-    help)   help_overlay; return ;;
     ctrl-p) guarded pods_view "$type" "$ns" "$kind" "$name"; return ;;
     enter)
       case $type in
@@ -263,11 +263,20 @@ case ${1:-} in
       local s=$(cat $KUBE_STATE/sort 2>/dev/null); export KUBE_SORT=${s:-name}
     fi
     local out; out=$(feed_$v)
-    if [[ -z $out ]]; then
-      printf 'no rows%s%s%s%s%s%s%s%s\n' "$DELIM" none "$DELIM" "" "$DELIM" "" "$DELIM" ""
-    else
-      print -r -- "$out"
-    fi ;;
+    [[ -z $out ]] && out=$(printf 'no rows%s%s%s%s%s%s%s%s' "$DELIM" none "$DELIM" "" "$DELIM" "" "$DELIM" "")
+    # Warm the per-view feed cache so --auto-feed can throttle heavy views.
+    [[ -n $KUBE_STATE ]] && print -r -- "$out" > $KUBE_STATE/feed.$v 2>/dev/null
+    print -r -- "$out" ;;
+  --auto-feed)
+    # Auto-refresh timer ONLY. Heavy views (overview/config) are served from the
+    # per-view feed cache within a longer TTL, so the 5s timer doesn't re-fetch
+    # them every cycle; light views always fetch fresh. Manual reloads (view
+    # switch, F5, --sync) use --feed and always fetch.
+    local v=$(cat $KUBE_STATE/view 2>/dev/null); v=${v:-overview}
+    local ttl=0; case $v in overview) ttl=20;; config) ttl=45;; esac
+    local cf=$KUBE_STATE/feed.$v mt=0
+    [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
+    if (( ttl > 0 && $(date +%s) - mt < ttl )); then cat $cf; else "$SELF" --feed; fi ;;
   --nav)
     shift; local dir=$1 cur nx i n=$#VIEWS
     cur=$(cat $KUBE_STATE/view 2>/dev/null); i=${VIEWS[(i)$cur]}

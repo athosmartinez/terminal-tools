@@ -106,6 +106,20 @@ cycle_sort() {
 
 sync_hdr() { printf 'change-header(%s)+reload(%s --fzf-src)' "$(logs_header)" "$SELF" }
 
+# do_preview with a short-lived cache, so the auto-refresh reload doesn't re-run
+# kubectl (and repaint the right pane) every cycle. TTL LOGS_PREVIEW_TTL sec
+# (default 20). Cache lives in the session state dir and dies with it.
+cached_preview() {
+  if [[ -n $LOGS_STATE && -d $LOGS_STATE ]]; then
+    local cf=$LOGS_STATE/pv.${1:-x}.${2:-x}.${3:-x} mt=0
+    [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
+    if (( $(date +%s) - mt < ${LOGS_PREVIEW_TTL:-20} )); then cat $cf; return; fi
+    do_preview "$@" | tee $cf.$$ >/dev/null && mv $cf.$$ $cf && cat $cf
+  else
+    do_preview "$@"
+  fi
+}
+
 direct() {
   local q=$1 all rows
   all=$(collect_workloads)
@@ -172,7 +186,7 @@ PREV=0
 POS=()
 while (( $# )); do
   case $1 in
-    --preview)      shift; do_preview "$@"; exit 0 ;;
+    --preview)      shift; cached_preview "$@"; exit 0 ;;
     --preview-pod)  shift; do_preview_pod "$@"; exit 0 ;;
     --keys)         keys; exit 0 ;;
     --fzf-src)      fzf_src; exit 0 ;;

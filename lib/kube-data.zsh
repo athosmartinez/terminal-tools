@@ -222,11 +222,16 @@ feed_ingress() {
 
 # ── feed: config (secrets + configmaps) ──────────────────────────────────────
 feed_config() {
-  local d=$DELIM; local -a nsflag; [[ -n $KUBE_NS ]] && nsflag=(-n $KUBE_NS) || nsflag=(-A)
-  { kubectl get secrets "${nsflag[@]}" --no-headers -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,TYPE:.type' 2>/dev/null | awk '{print $1"\tsecret\t"$2"\t"$3}'
-    kubectl get configmaps "${nsflag[@]}" --no-headers -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null | awk '{print $1"\tcm\t"$2"\t-"}'
-  } | sort | awk -F'\t' -v d="$d" '
+  local d=$DELIM tmp; tmp=$(mktemp -d) || return
+  local -a nsflag; [[ -n $KUBE_NS ]] && nsflag=(-n $KUBE_NS) || nsflag=(-A)
+  # Listing all secrets is the slow part (seconds on big clusters); run it in
+  # parallel with configmaps instead of sequentially.
+  ( kubectl get secrets "${nsflag[@]}" --no-headers -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,TYPE:.type' 2>/dev/null | awk '{print $1"\tsecret\t"$2"\t"$3}' > $tmp/s ) &
+  ( kubectl get configmaps "${nsflag[@]}" --no-headers -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name' 2>/dev/null | awk '{print $1"\tcm\t"$2"\t-"}' > $tmp/c ) &
+  wait
+  cat $tmp/s $tmp/c | sort | awk -F'\t' -v d="$d" '
       { ns=$1; t=$2; name=$3; typ=$4; col=(t=="secret")?"33":"36"
         disp=sprintf("\033[%sm%-7s\033[0m %-16.16s \033[1m%-40.40s\033[0m \033[38;5;243m%-.28s\033[0m", col, t, ns, name, typ)
         printf "%s%s%s%s%s%s%s%s%s\n", disp, d, t, d, ns, d, t, d, name }'
+  rm -rf $tmp
 }
