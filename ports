@@ -101,14 +101,57 @@ keys() {
     print
     print    "  ↑ / ↓        move                 type       filter"
     print    "  Tab          multi-select         Enter      kill selected"
+    print    "  Ctrl-T       cycle sort           Ctrl-O     toggle own/all processes"
     print    "  ?            this help            Esc        cancel"
     print
+    print -P "%F{cyan}Sort cycles port → process → pid → user; Ctrl-O hides other users' processes.%f"
     print -P "%F{cyan}The list auto-refreshes every ${PORTS_REFRESH:-4}s (set PORTS_REFRESH; 0 disables).%f"
     print -P "%F{cyan}Kills are confirmed first: SIGTERM, then SIGKILL after ~2s if needed.%f"
     print -P "%F{cyan}Every kill prints the real command (\$ kill -TERM <pid>) before running.%f"
     print
     print    "(press q to return to the picker)"
   } | $pager
+}
+
+# ── picker state (sort + own/all filter) ─────────────────────────────────────
+# Header: keybar + sort/scope status (line 1), column labels (line 2). Reads
+# $PORTS_STATE. Paren-free (fzf change-header argument).
+ports_header() {
+  local C=$'\033[36m' D=$'\033[38;5;243m' B=$'\033[1m' R=$'\033[0m'
+  local srt=$(cat $PORTS_STATE/sort 2>/dev/null) mine=$(cat $PORTS_STATE/mine 2>/dev/null)
+  local scope=all; [[ $mine == 1 ]] && scope=mine
+  local bar="${C}Enter$R$D kill$R  ${C}Tab$R$D multi$R  ${C}^T$R$D sort$R  ${C}^O$R$D own/all$R  ${D}type filter$R  ${D}? help$R  ${D}Esc$R"
+  bar+="   ${D}sort:$R ${srt:-port}   ${D}scope:$R $scope"
+  printf '%s\n%s' "$bar" "$(printf "$B%-6s  %-28s  %-7s  %-9s$R" PORT PROCESS PID USER)"
+}
+
+# Listening rows honoring the sort mode + own/all filter in $PORTS_STATE.
+fzf_src() {
+  local srt=$(cat $PORTS_STATE/sort 2>/dev/null) mine=$(cat $PORTS_STATE/mine 2>/dev/null)
+  local rows=$(collect_raw)
+  [[ $mine == 1 ]] && rows=$(print -r -- "$rows" | awk -F'\t' -v me="$MYUID" '$5==me')
+  case $srt in
+    process) rows=$(print -r -- "$rows" | sort -t$'\t' -k2,2 -k1,1n) ;;
+    pid)     rows=$(print -r -- "$rows" | sort -t$'\t' -k3,3n) ;;
+    user)    rows=$(print -r -- "$rows" | sort -t$'\t' -k4,4 -k1,1n) ;;
+    *)       rows=$(print -r -- "$rows" | sort -t$'\t' -k1,1n -k3,3n) ;;
+  esac
+  print -r -- "$rows" | to_fzf_lines
+}
+
+# Cycle sort port→process→pid→user; print fzf actions to refresh header + list.
+cycle_sort() {
+  local s=$(cat $PORTS_STATE/sort 2>/dev/null)
+  case $s in port) s=process;; process) s=pid;; pid) s=user;; *) s=port;; esac
+  print -r -- $s > $PORTS_STATE/sort
+  printf 'change-header(%s)+reload(%s --fzf-src)' "$(ports_header)" "$SELF"
+}
+
+# Toggle own-processes-only ↔ all; print fzf actions to refresh header + list.
+toggle_mine() {
+  local m=$(cat $PORTS_STATE/mine 2>/dev/null); m=$(( ! ${m:-0} ))
+  print -r -- $m > $PORTS_STATE/mine
+  printf 'change-header(%s)+reload(%s --fzf-src)' "$(ports_header)" "$SELF"
 }
 
 # ── confirmation (always reads from the terminal, never a pipe) ──────────────
@@ -174,8 +217,15 @@ kill_targets() {
 
 # ── interactive picker ───────────────────────────────────────────────────────
 interactive() {
-  local fzf_input
-  fzf_input=$(collect_raw | to_fzf_lines)
+  # Picker state (sort + own/all filter), read by --fzf-src and the header;
+  # exported so the fzf-spawned child dispatches (--cycle-sort, …) see it.
+  PORTS_STATE=$(mktemp -d) || { print -- "mktemp failed"; return 1 }
+  export PORTS_STATE
+  print -r -- port > $PORTS_STATE/sort
+  print -r -- 0 > $PORTS_STATE/mine
+  trap 'rm -rf $PORTS_STATE' EXIT
+
+  local fzf_input; fzf_input=$(fzf_src)
   if [[ -z $fzf_input ]]; then
     print -- "No processes are listening on any TCP port."
     return
@@ -192,8 +242,10 @@ interactive() {
   selection=$(print -r -- "$fzf_input" | fzf --ansi --multi \
     --delimiter="$DELIM" --with-nth=1 \
     --prompt='ports> ' --layout=reverse --info=inline --pointer='▸' --marker='✗' \
-    --header=$'\033[1;36mPORT    PROCESS                       PID      USER\033[0m\n\033[38;5;243m↑↓ move · type filter · Tab multi · Enter kill · ? keys · Esc cancel\033[0m' \
+    --header="$(ports_header)" \
     --bind="?:execute($SELF --keys)" \
+    --bind="ctrl-t:transform($SELF --cycle-sort)" \
+    --bind="ctrl-o:transform($SELF --toggle-mine)" \
     "${rbind[@]}" \
     --preview="$SELF --preview {3}" \
     --preview-window='right,50%,wrap') || return 0
@@ -254,6 +306,7 @@ USAGE
 PICKER KEYS
   ↑ / ↓     move          type      filter
   Tab       multi-select  Enter     kill selected
+  Ctrl-T    cycle sort    Ctrl-O    toggle own/all processes
   ?         show keys     Esc       cancel
 
 Kills are confirmed first, sent SIGTERM, then SIGKILL after ~2s if needed.
@@ -264,7 +317,9 @@ EOF
 case ${1:-} in
   --preview)      shift; do_preview "$@" ;;
   --keys)         keys ;;
-  --fzf-src)      collect_raw | to_fzf_lines ;;
+  --fzf-src)      fzf_src ;;
+  --cycle-sort)   cycle_sort ;;
+  --toggle-mine)  toggle_mine ;;
   kill)           shift; direct_kill "${1:-}" ;;
   -h|--help)      usage ;;
   '')             interactive ;;

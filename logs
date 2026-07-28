@@ -34,7 +34,8 @@ USAGE
   logs -h | --help     this help
 
 PICKER
-  ↑/↓ move · type to filter · Enter follow · Ctrl-P pod view · ? keys · Esc quit
+  ↑/↓ move · type filter · Enter follow · Ctrl-P pods · Ctrl-N ns · Ctrl-T sort · Esc
+  Ctrl-N scopes to one namespace; Ctrl-T cycles sort (name / ns / unready first).
   The list auto-refreshes every LOGS_REFRESH seconds (default 5; 0 disables).
 
 FOLLOWING
