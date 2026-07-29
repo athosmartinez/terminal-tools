@@ -1,17 +1,41 @@
 # terminal-tools
 
-A small set of personal terminal TUIs — fast, keyboard-driven, and built on
-[`fzf`](https://github.com/junegunn/fzf). Three tools:
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
+![Shell](https://img.shields.io/badge/shell-zsh-4EAA25.svg?logo=zsh&logoColor=white)
+![Built with fzf](https://img.shields.io/badge/built%20with-fzf-1E90FF.svg)
+
+Small terminal TUIs I use every day, built because the threshold of "worth
+building" got low enough. They live in the terminal — where I already spend the
+day — and they bend to my workflow instead of the other way around. Three tools:
 
 | Tool | What it does |
 |------|--------------|
-| **`kube`** | A Kubernetes cockpit: problems on top, then every workload/pod/node/ingress/secret, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. Think a lightweight, keyboard-first `k9s`. |
+| **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports (macOS), with a confirm step. |
 
-Every mutating action **prints the real command it runs** (`$ kubectl rollout restart …`,
-`$ kill -TERM …`) before executing — so the TUI doubles as a way to learn the
-underlying commands.
+Every mutating action **prints the real command it runs** (`$ kubectl rollout
+restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
+learn the commands underneath.
+
+## Demo
+
+`kube` — problems surface on top, the header shows the keys that apply to the
+current tab, and columns stay labeled and aligned:
+
+```text
+overview │ pods │ nodes │ events │ ingress │ config     ns: all   sort: name   live: 5s
+Enter logs  ^R restart  ^S scale  ^D describe  ^Y yaml  ^X delete  ^P pods  ^A more  │  ^N ns  ^T sort  ^L live  Tab view  ? help  Esc
+NAMESPACE           NAME                        KIND    READY   IMAGE                 CPU      MEM
+● kube-system       coredns                     deploy  1/2     coredns:1.11.1         12m     40Mi
+  tolky             backend-service             deploy  5/5     backend-servic~:v2   1276m   4435Mi
+  monitoring        prometheus                  sts     1/1     prometheus:v3.0.6      92m    972Mi
+```
+
+<!-- Record a real (colored) GIF and drop it at docs/demo.gif, then uncomment:
+![kube in action](docs/demo.gif)
+-->
 
 ## Highlights
 
@@ -19,9 +43,9 @@ underlying commands.
   scoping, actions and refresh all happen *in place*, no flicker.
 - **Contextual keybar** — the header always shows the keys that apply to the
   current view (nodes shows `cordon/drain`, pods hides `restart/scale`, …).
-- **Auto-refresh** with a cached preview pane, so live data never hammers the
+- **Auto-refresh** with cached feed + preview, so live data never hammers the
   cluster or repaints noisily.
-- **Command transparency** — learn `kubectl`/`kill` by seeing every command.
+- **Command transparency** — learn `kubectl` / `kill` by seeing every command.
 - **Light- and dark-theme friendly** colors (no hard-coded assumptions).
 
 ## Requirements
@@ -42,9 +66,9 @@ cd terminal-tools
 ```
 
 `install.sh` symlinks the three entry points into `~/.local/bin` (make sure it's
-on your `$PATH`). Because they're symlinks, editing files in the repo updates
-the installed tools instantly. The shared `lib/` is resolved relative to each
-script, so it travels with the repo.
+on your `$PATH`). Because they're symlinks, editing files in the repo updates the
+installed tools instantly. The shared `lib/` is resolved relative to each script,
+so it travels with the repo.
 
 ## Usage
 
@@ -54,38 +78,45 @@ logs                 # pick a workload and follow its logs
 logs <query>         # 1 match → follow immediately
 ports                # pick a listening process to kill
 ports <port|name>    # filter; `ports kill <q>` to kill directly
-<tool> -h            # help
+<tool> -h            # help  ·  press ? inside any picker for the keys
 ```
 
-### `kube` keys
+### Keys
 
+**`kube`**
 ```
 Tab / Shift-Tab  switch view        ^N  namespace scope    ^T  cycle sort
 Enter            primary action     ^D  describe+events     ^Y  view YAML
 ^R restart  ^S scale  ^X delete  ^P pods    ^A  actions menu (the long tail)
 ^L  toggle auto-refresh   F5  reload now    ?  help          Esc quit
 ```
-
 The **actions menu** (`^A`) carries everything else — rollback, set-image,
-exec/shell, port-forward, cordon/uncordon/drain, cronjob trigger, secret
-reveal, `kubectl cp`, and more. Mutations always confirm first; `^Y` in the
-menu copies the resolved command to the clipboard.
+exec/shell, port-forward, cordon/uncordon/drain, cronjob trigger, secret reveal,
+`kubectl cp`, and more. Mutations always confirm first; `^Y` in the menu copies
+the resolved command to the clipboard.
+
+**`logs`** — `Enter` follow · `^P` pod view · `^N` namespace scope · `^T` sort
+(name / ns / unready first) · `?` help · `Esc` quit
+
+**`ports`** — `Enter` kill · `Tab` multi-select · `^T` sort (port / process / pid
+/ user) · `^O` toggle own/all processes · `?` help · `Esc` cancel
 
 ### Environment knobs
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `KUBE_REFRESH` | `5` | auto-refresh interval (seconds); `0` starts paused |
-| `KUBE_PREVIEW_TTL` | `20` | preview cache TTL (seconds) |
+| `KUBE_REFRESH` | `5` | kube auto-refresh interval (seconds); `0` starts paused |
+| `KUBE_PREVIEW_TTL` | `20` | kube preview cache TTL (seconds) |
 | `LOGS_REFRESH` / `PORTS_REFRESH` | `5` / `4` | picker auto-refresh; `0` disables |
+| `LOGS_PREVIEW_TTL` | `20` | logs preview cache TTL (seconds) |
 | `KUBE_ALL` | — | `1` shows cert-manager ACME solver ingresses too |
 
 ## Notes
 
-- `ports` is macOS-specific (`lsof` flags). `kube`/`logs` are cross-platform
-  wherever `kubectl` + `fzf` run.
-- All actions run against your **current** `kubectl` context. There is no
-  hidden state or config — the tools read live from the cluster.
+- `ports` is macOS-specific (`lsof` flags). `kube` / `logs` run wherever
+  `kubectl` + `fzf` do.
+- Everything runs against your **current** `kubectl` context. There is no hidden
+  state or config — the tools read live from the cluster.
 
 ## License
 
