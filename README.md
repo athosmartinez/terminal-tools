@@ -5,9 +5,9 @@
 ![Shell](https://img.shields.io/badge/shell-zsh-4EAA25.svg?logo=zsh&logoColor=white)
 ![Built with fzf](https://img.shields.io/badge/built%20with-fzf-1E90FF.svg)
 
-Small terminal TUIs I use every day, built because the threshold of "worth
-building" got low enough. They live in the terminal — where I already spend the
-day — and they bend to my workflow instead of the other way around. Three tools:
+Three keyboard-driven terminal TUIs built on
+[fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
+follower (`logs`), and a TCP-port process killer (`ports`).
 
 | Tool | What it does |
 |------|--------------|
@@ -28,9 +28,9 @@ current tab, and columns stay labeled and aligned:
 overview │ pods │ nodes │ events │ ingress │ config     ns: all   sort: name   live: 5s
 Enter logs  ^R restart  ^S scale  ^D describe  ^Y yaml  ^X delete  ^P pods  ^A more  │  ^N ns  ^T sort  ^L live  Tab view  ? help  Esc
 NAMESPACE           NAME                        KIND    READY   IMAGE                 CPU      MEM
-● kube-system       coredns                     deploy  1/2     coredns:1.11.1         12m     40Mi
-  tolky             backend-service             deploy  5/5     backend-servic~:v2   1276m   4435Mi
-  monitoring        prometheus                  sts     1/1     prometheus:v3.0.6      92m    972Mi
+● platform          api-gateway                 deploy  1/2     api-gateway:2.3.1      12m     40Mi
+  web               web-frontend                deploy  5/5     web-fronten~:v2.3    1276m   4435Mi
+  data              cache                       sts     1/1     redis:7.2.4            92m    972Mi
 ```
 
 <!-- Record a real (colored) GIF and drop it at docs/demo.gif, then uncomment:
