@@ -21,7 +21,12 @@ learn the commands underneath.
 
 ## Demo
 
-`kube` — problems surface on top, the header shows the keys that apply to the
+**`ports`** — find and kill whatever is holding a TCP port; contextual header,
+one color per process, and live details in the preview pane:
+
+![ports](docs/ports.png)
+
+**`kube`** — problems surface on top, the header shows the keys that apply to the
 current tab, and columns stay labeled and aligned:
 
 ```text
