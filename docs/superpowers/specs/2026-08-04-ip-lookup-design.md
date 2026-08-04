@@ -1,6 +1,7 @@
 # IP lookup in `kube` and `logs` — design
 
-Status: approved, ready for implementation plan.
+Status: implemented. One rule below was superseded during implementation — see
+"Superseded after implementation" at the end.
 
 ## Problem
 
@@ -194,3 +195,26 @@ These are established conventions (see `CLAUDE.md`), not new decisions:
   `kube`'s `ips` view is for.
 - Endpoint/EndpointSlice-level lookup, CIDR range queries, and reverse DNS.
 - Deleting a Service from the `ips` view (`del-res` keeps its current scope).
+
+## Superseded after implementation
+
+**Resolution order is `node > pod > svc > ingress`, not the `pod > svc > node >
+ingress` written above.** The original order assumed a node IP would collide
+with at most one `hostNetwork` pod. Managed clusters run seven or more per node
+— on the cluster this was built against, every node IP is shared with fluentbit,
+kube-proxy, node-exporter and four others — so the pod-first rule made
+`logs <node-ip>` follow whichever daemon sorted first alphabetically, while
+answering "who is this?" wrongly: the address belongs to the node, and the pods
+only borrow it.
+
+Two consequences of the same change, both reflected in `logs -h` and the README:
+
+- `logs -p <ip>` now refuses a node address instead of silently following a
+  hostNetwork pod.
+- Because `svc` still outranks `ingress`, a LoadBalancer address resolves to the
+  Service in front of the ingress controller. The "ingress IP is identified
+  only" branch fires only for an ingress address no Service shares.
+
+The `also:` note also gained a cap: past three other matches it summarizes by
+type with counts. Listing them all produced a 5228-character line on the
+LoadBalancer IP shared by one Service and 114 Ingresses.

@@ -47,7 +47,8 @@ FOLLOWING
 IP LOOKUP
   logs <ip>            node IP opens the pod picker pre-filtered by that node;
                        pod IP follows that pod; service IP opens its backend
-                       pods. Works with -n and with -p.
+                       pods. Works with -n, and with -p when the address
+                       resolves to a pod.
                        Order is node > pod > service > ingress: a hostNetwork
                        pod only borrows its node's address, so a node IP
                        answers with the node.
