@@ -105,12 +105,15 @@ ip_index() {
 }
 
 # Filters the TSV index on stdin down to <ip>, most relevant row first.
-# Priority pod > svc > node > ingress: a hostNetwork pod carries its node's
-# address, and the pod is what the search is after. Returns 1 on no match.
+# Priority node > pod > svc > ingress. A hostNetwork pod does not have an
+# address of its own — it borrows its node's, and a managed cluster runs several
+# such DaemonSets per node, so a node address matches the node plus a handful of
+# borrowers whose order is an alphabetical accident. The address is the node's;
+# the pods are the borrowers. Returns 1 on no match.
 ip_lookup() {
   local ip=$1 out
   out=$(awk -F'\t' -v ip="$ip" '
-    function rank(t) { return (t == "pod") ? 1 : (t == "svc") ? 2 : (t == "node") ? 3 : 4 }
+    function rank(t) { return (t == "node") ? 1 : (t == "pod") ? 2 : (t == "svc") ? 3 : 4 }
     $1 == ip { print rank($2) "\t" $0 }' | sort -t$'\t' -k1,1 | cut -f2-)
   [[ -z $out ]] && return 1
   print -r -- "$out"
