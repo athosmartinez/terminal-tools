@@ -104,6 +104,31 @@ ip_index() {
   rm -rf $tmp
 }
 
+# Filters the TSV index on stdin down to <ip>, most relevant row first.
+# Priority pod > svc > node > ingress: a hostNetwork pod carries its node's
+# address, and the pod is what the search is after. Returns 1 on no match.
+ip_lookup() {
+  local ip=$1 out
+  out=$(awk -F'\t' -v ip="$ip" '
+    function rank(t) { return (t == "pod") ? 1 : (t == "svc") ? 2 : (t == "node") ? 3 : 4 }
+    $1 == ip { print rank($2) "\t" $0 }' | sort -t$'\t' -k1,1 | cut -f2-)
+  [[ -z $out ]] && return 1
+  print -r -- "$out"
+}
+
+# True when the string is a complete IPv4 address. Deliberately IPv4-only:
+# partial addresses are what the kube ips view filters interactively.
+is_ipv4() { [[ $1 == <0-255>.<0-255>.<0-255>.<0-255> ]] }
+
+# Label selector of a Service as k=v,k=v. Empty for headless or ExternalName
+# services, which select nothing.
+svc_selector() {
+  local ns=$1 name=$2 sel
+  sel=$(kubectl get svc $name -n $ns \
+        -o go-template='{{range $k,$v := .spec.selector}}{{$k}}={{$v}},{{end}}' 2>/dev/null)
+  print -- ${sel%,}
+}
+
 to_fzf_lines() {
   awk -F'\t' -v d="$DELIM" -v pal_s="$KUBETUI_PALETTE" '
     BEGIN { n = split(pal_s, pal, " ") }
