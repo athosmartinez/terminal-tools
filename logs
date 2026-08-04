@@ -144,14 +144,18 @@ direct() {
   fi
 }
 
-# Resolves an IP to its owner and acts on it: a pod IP follows that pod, a
-# service IP opens its backend pods, a node IP opens the pod picker
-# pre-filtered by that node, an ingress IP identifies itself only. The
-# resolution line prints first, so the answer to "who is this?" stays visible
-# above the stream.
+# Resolves an IP to its owner and acts on it: a node IP opens the pod picker
+# pre-filtered by that node, a pod IP follows that pod, a service IP opens its
+# backend pods, an ingress IP identifies itself only. The resolution line prints
+# first, so the answer to "who is this?" stays visible above the stream.
 follow_by_ip() {
-  local ip=$1 rows first rest also where type ns kind name extra sel
-  rows=$(ip_index | ip_lookup $ip) || die "no resource with IP $ip"
+  local ip=$1 index rows first rest also where type ns kind name extra sel
+  # An empty index is never a real cluster: every cluster has at least node
+  # addresses. Telling that apart from a genuine miss saves debugging the wrong
+  # thing when the context is broken or the credentials expired.
+  index=$(ip_index)
+  [[ -z $index ]] && die "no IPs found — is the cluster reachable? (context: $(kubectl config current-context 2>/dev/null))"
+  rows=$(print -r -- "$index" | ip_lookup $ip) || die "no resource with IP $ip"
   first=$(head -1 <<< $rows)
   local _
   IFS=$'\t' read -r _ type ns kind name extra <<< $first
@@ -160,8 +164,22 @@ follow_by_ip() {
   print -P "%B%F{cyan}→%f%b $ip = $type $where"
   rest=$(sed -n '2,$p' <<< $rows)
   if [[ -n $rest ]]; then
-    also=$(print -r -- "$rest" | awk -F'\t' \
-      '{ printf "%s%s %s", (NR>1 ? ", " : ""), $2, ($3=="-" ? $5 : $3"/"$5) }')
+    # A LoadBalancer address is shared by the Service and every Ingress behind
+    # it — hundreds of names on a busy cluster. Past a handful, counts per type
+    # say the same thing in one short line and keep the → line readable.
+    also=$(print -r -- "$rest" | awk -F'\t' -v max=3 '
+      function plural(t) { return (t == "ingress") ? t "es" : t "s" }
+      { n++
+        row[n] = $2 " " ($3 == "-" ? $5 : $3 "/" $5)
+        if (!($2 in cnt)) order[++kinds] = $2
+        cnt[$2]++ }
+      END {
+        if (n <= max) { for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? ", " : ""), row[i]; exit }
+        for (i = 1; i <= kinds; i++) {
+          t = order[i]
+          printf "%s%d %s", (i > 1 ? ", " : ""), cnt[t], (cnt[t] == 1 ? t : plural(t))
+        }
+      }')
     print -P "%F{243}  also: $also%f"
   fi
 

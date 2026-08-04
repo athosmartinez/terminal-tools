@@ -90,7 +90,7 @@ _ip_rows() {
 # IPs, node internal/external addresses, ingress external IPs. The four kubectl
 # calls are independent and run in parallel  wall time ≈ slowest single call .
 ip_index() {
-  local tmp; tmp=$(mktemp -d) || return
+  local tmp; tmp=$(mktemp -d) || die "mktemp failed"
   ( kubectl get pods -A --no-headers \
       -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,IP:.status.podIP,NODE:.spec.nodeName,PHASE:.status.phase' 2>/dev/null > $tmp/pods ) &
   ( kubectl get svc -A --no-headers \
