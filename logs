@@ -35,7 +35,7 @@ USAGE
   logs -h | --help     this help
 
 PICKER
-  ↑/↓ move · type filter · Enter follow · Ctrl-P pods · Ctrl-N ns · Ctrl-T sort · Esc
+  ↑/↓ move · type filter · Enter follow · Ctrl-P pods · Ctrl-F ip · Ctrl-N ns · Ctrl-T sort · Esc
   Ctrl-N scopes to one namespace; Ctrl-T cycles sort (name / ns / unready first).
   The list auto-refreshes every LOGS_REFRESH seconds (default 5; 0 disables).
 
@@ -46,8 +46,9 @@ FOLLOWING
 
 IP LOOKUP
   logs <ip>            pod IP follows that pod; service IP opens its backend
-                       pods; node IP opens the pods on that node; ingress IP is
-                       identified only. Works with -n and with -p.
+                       pods; node IP opens the pod picker pre-filtered
+                       by that node; ingress IP is identified only.
+                       Works with -n and with -p.
 EOF
 }
 
@@ -57,8 +58,8 @@ keys() {
     print
     print    "  ↑ / ↓        move                 type       filter"
     print    "  Enter        follow logs          Ctrl-P     pod view"
-    print    "  Ctrl-N       namespace filter     Ctrl-T     cycle sort (name/ns/unready)"
-    print    "  ?            this help            Esc        quit"
+    print    "  Ctrl-F       follow by IP         Ctrl-N     namespace filter"
+    print    "  Ctrl-T       cycle sort - name/ns/unready    ? help   Esc quit"
     print
     print -P "%F{cyan}The workload list auto-refreshes every ${LOGS_REFRESH:-5}s (set LOGS_REFRESH; 0 disables).%f"
     print -P "%F{cyan}Following: all pods of the workload, one color per pod; auto-reconnect.%f"
@@ -74,7 +75,7 @@ keys() {
 logs_header() {
   local C=$'\033[36m' D=$'\033[38;5;243m' B=$'\033[1m' R=$'\033[0m' ns sort
   ns=$(cat $LOGS_STATE/ns 2>/dev/null); sort=$(cat $LOGS_STATE/sort 2>/dev/null)
-  local bar="${C}Enter$R$D follow$R  ${C}^P$R$D pods$R  ${C}^N$R$D ns$R  ${C}^T$R$D sort$R  ${D}? help$R  ${D}Esc$R"
+  local bar="${C}Enter$R$D follow$R  ${C}^P$R$D pods$R  ${C}^F$R$D ip$R  ${C}^N$R$D ns$R  ${C}^T$R$D sort$R  ${D}? help$R  ${D}Esc$R"
   bar+="   ${D}ns:$R ${ns:-all}   ${D}sort:$R ${sort:-name}"
   printf '%s\n%s' "$bar" "$(printf "$B%-20s  %-36s  %-7s  %-7s$R" NAMESPACE WORKLOAD KIND READY)"
 }
@@ -206,7 +207,7 @@ interactive() {
 
   local out key sel
   out=$(print -r -- "$input" | fzf --ansi --delimiter="$DELIM" --with-nth=1 \
-    --query="$query" --expect=ctrl-p \
+    --query="$query" --expect=ctrl-p,ctrl-f \
     --prompt='logs> ' --layout=reverse --info=inline --pointer='▸' \
     --header="$(logs_header)" \
     --bind="?:execute($SELF --keys)" \
@@ -224,6 +225,15 @@ interactive() {
 
   if [[ $key == ctrl-p ]]; then
     pods_picker "${ns:+$ns }" follow
+    return
+  fi
+  if [[ $key == ctrl-f ]]; then
+    local ip
+    print -n "ip> "
+    read ip </dev/tty
+    [[ -z $ip ]] && return 0
+    is_ipv4 $ip || die "not an IPv4 address: $ip"
+    follow_by_ip $ip
     return
   fi
   [[ -z $sel ]] && return 0
