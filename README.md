@@ -105,10 +105,19 @@ The **`ips` view** (last tab) lists every IP in the cluster in one table — pod
 IPs, Service ClusterIPs and external IPs, node addresses, ingress external IPs —
 sorted numerically, so typing part of an address narrows to a subnet. `Enter`
 does the right thing per row: logs for a pod, port-forward for a Service, pods
-for a node.
+for a node, open the URL for an ingress.
 
 **`logs`** — `Enter` follow · `^P` pod view · `^F` follow by IP · `^N` namespace
 scope · `^T` sort (name / ns / unready first) · `?` help · `Esc` quit
+
+`^P` already filters by **pod** IP: the pod view is `kubectl get pods -A -o
+wide`, which carries an IP column. `^F` (and `logs <ip>`) adds what `^P` can't —
+resolving **Service, node and Ingress** addresses. Order is **node > pod >
+Service > Ingress**: a `hostNetwork` pod only borrows its node's address, so a
+node IP answers with the node and lists the borrowing pods as a note. A
+LoadBalancer address normally sits on the Service in front of the ingress
+controller *and* on every Ingress behind it, so it resolves to that Service and
+opens its pods; an Ingress IP no Service shares is identified only.
 
 **`ports`** — `Enter` kill · `Tab` multi-select · `^T` sort (port / process / pid
 / user) · `^O` toggle own/all processes · `?` help · `Esc` cancel

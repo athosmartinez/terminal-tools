@@ -8,7 +8,7 @@
 #   logs -p [query]      logs of a pod's PREVIOUS container (CrashLoop), no follow
 #   logs -h | --help     help
 #
-# Picker: Enter follow · Ctrl-P pod view · Esc quit
+# Picker: Enter follow · Ctrl-P pod view · Ctrl-F follow by IP · Esc quit
 # Following: reconnects on its own when the stream dies; Ctrl-C quits.
 #
 # Depends on: kubectl, fzf (brew). Shared code: lib/kubetui.zsh.
@@ -45,10 +45,18 @@ FOLLOWING
   Always uses the current kubectl context.
 
 IP LOOKUP
-  logs <ip>            pod IP follows that pod; service IP opens its backend
-                       pods; node IP opens the pod picker pre-filtered
-                       by that node; ingress IP is identified only.
-                       Works with -n and with -p.
+  logs <ip>            node IP opens the pod picker pre-filtered by that node;
+                       pod IP follows that pod; service IP opens its backend
+                       pods. Works with -n and with -p.
+                       Order is node > pod > service > ingress: a hostNetwork
+                       pod only borrows its node's address, so a node IP
+                       answers with the node.
+                       A LoadBalancer address normally sits on the service in
+                       front of the ingress controller as well as on every
+                       ingress behind it, so it resolves to that service; an
+                       ingress IP no service shares is identified only.
+                       Ctrl-P in the picker already filters by pod IP; Ctrl-F
+                       is what resolves service, node and ingress addresses.
 EOF
 }
 
