@@ -9,8 +9,8 @@ _reg() { A_ORDER+=($1); A_LABEL[$1]=$2; A_KEY[$1]=$3; A_APPLIES[$1]=$4; A_CONFIR
 #     id           label                 key      applies                                    conf  desc
 _reg logs        "Follow logs"          enter  "wl pod job"                                 0 "Stream logs of all pods, auto-reconnecting."
 _reg logs-prev   "Previous logs"        ""     "pod"                                        0 "Logs of the previous (crashed) container."
-_reg describe    "Describe + events"    ctrl-d "wl pod node ingress secret cm job cronjob"  0 "Describe the object and its recent events."
-_reg yaml        "View YAML"            ctrl-y "wl pod node ingress secret cm job cronjob"  0 "Full manifest as YAML."
+_reg describe    "Describe + events"    ctrl-d "wl pod node ingress secret cm job cronjob svc"  0 "Describe the object and its recent events."
+_reg yaml        "View YAML"            ctrl-y "wl pod node ingress secret cm job cronjob svc"  0 "Full manifest as YAML."
 _reg restart     "Rollout restart"      ctrl-r "wl"                                         1 "Rolling restart of the workload."
 _reg scale       "Scale"                ctrl-s "deploy sts"                                 1 "Set the replica count."
 _reg scale-zero  "Scale to zero"        ""     "deploy sts"                                 1 "Scale down to 0 replicas."

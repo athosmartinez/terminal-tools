@@ -225,6 +225,7 @@ act_dispatch() {
       case $type in
         event)   guarded kubectl describe $kind $name -n $ns 2>&1 | page; return ;;
         ingress) id=open-url ;; secret) id=reveal ;; cm) id=view-cm ;;
+        svc)     id=pf ;;
         node)    id=pods-on ;; *) id=logs ;;
       esac ;;
     ctrl-d) id=describe ;; ctrl-y) id=yaml ;; ctrl-r) id=restart ;;
@@ -244,6 +245,13 @@ kube_preview() {
     node)    do_preview_node $name ;;
     event)   kubectl get events -n $ns --field-selector involvedObject.name=$name --sort-by=.lastTimestamp 2>/dev/null | tail -20 ;;
     ingress) kubectl describe ingress $name -n $ns 2>/dev/null | head -45 ;;
+    svc)     kubectl describe svc $name -n $ns 2>/dev/null | head -30
+             local sel; sel=$(svc_selector $ns $name)
+             if [[ -n $sel ]]; then
+               print
+               print -P "%B%F{cyan}Pods behind it%f%b"
+               kubectl get pods -n $ns -l $sel -o wide 2>/dev/null | color_status
+             fi ;;
     secret|cm) kubectl describe $type $name -n $ns 2>/dev/null | head -45 ;;
     job)     kubectl describe job $name -n $ns 2>/dev/null | head -40 ;;
     *)       print -- "" ;;
