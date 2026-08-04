@@ -123,14 +123,23 @@ ip_lookup() {
 # partial addresses are what the kube ips view filters interactively.
 is_ipv4() { [[ $1 == <0-255>.<0-255>.<0-255>.<0-255> ]] }
 
-# Label selector of a Service as k=v,k=v. Empty for headless or ExternalName
-# services, which select nothing.
-svc_selector() {
-  local ns=$1 name=$2 sel
-  sel=$(kubectl get svc $name -n $ns \
-        -o go-template='{{range $k,$v := .spec.selector}}{{$k}}={{$v}},{{end}}' 2>/dev/null)
+# ── label selectors ──────────────────────────────────────────────────────────
+# Flattens the label map at <field> into k=v,k=v. Services and workloads differ
+# only in where the map lives, so both selector helpers share this one reader.
+# Prints nothing when the field is absent — a Service that selects nothing
+# (headless, ExternalName) or a kind without a selector.
+_selector_at() {
+  local ns=$1 kind=$2 name=$3 field=$4 sel
+  sel=$(kubectl get $kind $name -n $ns \
+        -o go-template='{{range $k,$v := '"$field"'}}{{$k}}={{$v}},{{end}}' 2>/dev/null)
   print -- ${sel%,}
 }
+
+# Label selector of a Service as k=v,k=v.
+svc_selector() { _selector_at $1 svc $2 .spec.selector }
+
+# Label selector of a workload (deploy/sts/ds/...) as k=v,k=v.
+resolve_selector() { _selector_at $1 $2 $3 .spec.selector.matchLabels }
 
 to_fzf_lines() {
   awk -F'\t' -v d="$DELIM" -v pal_s="$KUBETUI_PALETTE" '
@@ -181,13 +190,6 @@ color_status() {
 }
 
 # ── follow engine ────────────────────────────────────────────────────────────
-resolve_selector() {
-  local ns=$1 kind=$2 name=$3 sel
-  sel=$(kubectl get $kind $name -n $ns \
-        -o go-template='{{range $k,$v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}' 2>/dev/null)
-  print -- ${sel%,}
-}
-
 follow_workload() {
   local ns=$1 kind=$2 name=$3
   local -i tail=$4 npods
