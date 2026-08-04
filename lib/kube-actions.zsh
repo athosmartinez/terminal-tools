@@ -130,15 +130,21 @@ open_ingress_url() {
   sleep 0.6
 }
 
-# The Ctrl-P "pod view" for the selected item.
+# The Ctrl-P "pod view" for the selected item. Each type narrows the list the
+# way that type can be narrowed: a workload and a Service by their selector, a
+# node by its name in the query since the pod list carries a NODE column.
+# Anything else can only be pre-filtered by namespace.
 pods_view() {
-  local type=$1 ns=$2 kind=$3 name=$4
-  if [[ $type == wl ]]; then
-    local labels; labels=$(resolve_selector $ns $kind $name)
-    pods_picker "" follow $ns $labels
-  else
-    pods_picker "${ns:+$ns }" follow
-  fi
+  local type=$1 ns=$2 kind=$3 name=$4 sel
+  case $type in
+    wl)   sel=$(resolve_selector $ns $kind $name)
+          pods_picker "" follow $ns $sel ;;
+    svc)  sel=$(svc_selector $ns $name)
+          [[ -z $sel ]] && { print -P "%F{yellow}service $ns/$name has no selector — no pods behind it%f"; sleep 1; return }
+          pods_picker "" follow $ns $sel ;;
+    node) pods_picker "$name" follow ;;
+    *)    pods_picker "${ns:+$ns }" follow ;;
+  esac
 }
 
 # Runs an action by id: gathers interactive extras, echoes the real command,

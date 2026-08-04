@@ -241,12 +241,14 @@ feed_config() {
 # IPs, node addresses, ingress external IPs. Columns: ip · kind · ns · name ·
 # detail. Rows arrive sorted numerically by IP from ip_index, so a subnet reads
 # as a block. Honors $KUBE_NS for namespaced rows; nodes are cluster-scoped and
-# always show, as in the nodes view.
+# always show, as in the nodes view. Hides cert-manager acme solvers unless
+# $KUBE_ALL=1, on the same rule as the ingress view — they are the same objects.
 feed_ips() {
   local d=$DELIM
-  ip_index | awk -F'\t' -v d="$d" -v nsflt="$KUBE_NS" '
+  ip_index | awk -F'\t' -v d="$d" -v nsflt="$KUBE_NS" -v all="$KUBE_ALL" '
     { ip=$1; type=$2; ns=$3; kind=$4; name=$5; extra=$6
       if (nsflt != "" && type != "node" && ns != nsflt) next
+      if (type == "ingress" && all != "1" && name ~ /cm-acme-http-solver/) next
       kc=(type=="pod")?"36":(type=="svc")?"32":(type=="node")?"35":"34"
       nsout=(type=="node")?"":ns
       disp=sprintf("\033[1m%-15.15s\033[0m  \033[%sm%-7s\033[0m  %-16.16s  %-30.30s  \033[38;5;243m%-.28s\033[0m",
