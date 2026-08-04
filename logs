@@ -29,6 +29,7 @@ logs — follow Kubernetes workload logs interactively
 USAGE
   logs                 interactive picker (arrows, type to filter)
   logs <query>         1 match → follow immediately; several → pre-filtered picker
+  logs <ip>            resolve a pod, service, node or ingress IP and follow it
   logs -n <N> [query]  initial history lines (default 100)
   logs -p [query]      logs of a pod's PREVIOUS container (CrashLoop), no follow
   logs -h | --help     this help
@@ -42,6 +43,11 @@ FOLLOWING
   All pods of the workload, each line prefixed with the pod name (one color per pod).
   If the stream dies (deploy, restart), it reconnects on its own. Ctrl-C quits.
   Always uses the current kubectl context.
+
+IP LOOKUP
+  logs <ip>            pod IP follows that pod; service IP opens its backend
+                       pods; node IP opens the pods on that node; ingress IP is
+                       identified only. Works with -n and with -p.
 EOF
 }
 
@@ -136,6 +142,49 @@ direct() {
   fi
 }
 
+# Resolves an IP to its owner and acts on it: a pod IP follows that pod, a
+# service IP opens its backend pods, a node IP opens the pods running on it, an
+# ingress IP identifies itself only. The resolution line prints first, so the
+# answer to "who is this?" stays visible above the stream.
+follow_by_ip() {
+  local ip=$1 rows first rest also where type ns kind name extra sel
+  rows=$(ip_index | ip_lookup $ip) || die "no resource with IP $ip"
+  first=$(head -1 <<< $rows)
+  local _
+  IFS=$'\t' read -r _ type ns kind name extra <<< $first
+
+  [[ $ns == - ]] && where=$name || where=$ns/$name
+  print -P "%B%F{cyan}→%f%b $ip = $type $where"
+  rest=$(sed -n '2,$p' <<< $rows)
+  if [[ -n $rest ]]; then
+    also=$(print -r -- "$rest" | awk -F'\t' \
+      '{ printf "%s%s %s", (NR>1 ? ", " : ""), $2, ($3=="-" ? $5 : $3"/"$5) }')
+    print -P "%F{243}  also: $also%f"
+  fi
+
+  case $type in
+    pod)
+      if (( PREV )); then
+        show_cmd kubectl logs -n $ns $name -p --prefix --all-containers --tail=$TAIL
+        kubectl logs -n $ns $name -p --prefix --all-containers --tail=$TAIL 2>&1 | colorize
+        (( $pipestatus[1] != 0 )) && print -P "%F{yellow}no previous container — pod never restarted?%f"
+      else
+        follow_pod $ns $name $TAIL
+      fi ;;
+    svc)
+      (( PREV )) && die "-p needs a pod IP — $ip belongs to service $where"
+      sel=$(svc_selector $ns $name)
+      [[ -z $sel ]] && die "service $where has no selector — nothing to follow"
+      pods_picker "" follow $ns $sel ;;
+    node)
+      (( PREV )) && die "-p needs a pod IP — $ip belongs to node $name"
+      pods_picker "$name" follow ;;
+    ingress)
+      print -P "%F{yellow}$ip is the external IP of ingress $where — no app logs behind it.%f"
+      print -P "%F{243}Follow the workload its rules point to, or press Tab to the ips view in kube.%f" ;;
+  esac
+}
+
 interactive() {
   local query=$1
   # Picker state (namespace filter + sort), read by --fzf-src and the header;
@@ -204,7 +253,9 @@ while (( $# )); do
 done
 
 q=${POS[1]:-}
-if (( PREV )); then
+if is_ipv4 "$q"; then
+  follow_by_ip $q
+elif (( PREV )); then
   pods_picker "$q" previous
 elif [[ -z $q ]]; then
   interactive ""
