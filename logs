@@ -59,7 +59,8 @@ keys() {
     print    "  ↑ / ↓        move                 type       filter"
     print    "  Enter        follow logs          Ctrl-P     pod view"
     print    "  Ctrl-F       follow by IP         Ctrl-N     namespace filter"
-    print    "  Ctrl-T       cycle sort - name/ns/unready    ? help   Esc quit"
+    print    "  Ctrl-T       cycle sort - name/ns/unready"
+    print    "  ?            help                 Esc        quit"
     print
     print -P "%F{cyan}The workload list auto-refreshes every ${LOGS_REFRESH:-5}s (set LOGS_REFRESH; 0 disables).%f"
     print -P "%F{cyan}Following: all pods of the workload, one color per pod; auto-reconnect.%f"
@@ -144,9 +145,10 @@ direct() {
 }
 
 # Resolves an IP to its owner and acts on it: a pod IP follows that pod, a
-# service IP opens its backend pods, a node IP opens the pods running on it, an
-# ingress IP identifies itself only. The resolution line prints first, so the
-# answer to "who is this?" stays visible above the stream.
+# service IP opens its backend pods, a node IP opens the pod picker
+# pre-filtered by that node, an ingress IP identifies itself only. The
+# resolution line prints first, so the answer to "who is this?" stays visible
+# above the stream.
 follow_by_ip() {
   local ip=$1 rows first rest also where type ns kind name extra sel
   rows=$(ip_index | ip_lookup $ip) || die "no resource with IP $ip"
