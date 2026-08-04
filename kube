@@ -38,6 +38,7 @@ VIEWS (Tab / Shift-Tab to switch)
   events    cluster Warning events, newest first
   ingress   host → service routes
   config    secrets and configmaps
+  ips       every cluster IP: pods, services, nodes, ingresses
 
 KEYS
   Enter  primary action     ^D describe+events   ^Y yaml
@@ -64,7 +65,7 @@ guarded() {
   trap - INT
 }
 
-VIEWS=(overview pods nodes events ingress config)
+VIEWS=(overview pods nodes events ingress config ips)
 
 # Top tab bar: current view highlighted, plus namespace scope, sort and live
 # status. Reads cockpit state from $KUBE_STATE files (view/ns/sort/live), since
@@ -99,6 +100,7 @@ keybar() {
     events)   ctx=(Enter:describe '^Y:yaml') ;;
     ingress)  ctx=(Enter:open '^D:describe' '^Y:yaml' '^X:delete') ;;
     config)   ctx=(Enter:reveal '^D:describe' '^Y:yaml' '^X:delete') ;;
+    ips)      ctx=(Enter:logs '^D:describe' '^Y:yaml' '^X:delete' '^P:pods' '^A:more') ;;
     *)        ctx=(Enter:act) ;;
   esac
   for pair in $ctx; do k=${pair%%:*}; l=${pair#*:}; out+="$C$k$R$D $l$R  "; done
@@ -120,6 +122,7 @@ col_header() {
     events)   printf "$B%-20s %-14s %-30s %s$R" REASON NAMESPACE OBJECT MESSAGE ;;
     ingress)  printf "$B%-16s %-30s %-42s %s$R" NAMESPACE NAME HOSTS TLS ;;
     config)   printf "$B%-7s %-16s %-40s %s$R" TYPE NAMESPACE NAME DETAIL ;;
+    ips)      printf "$B%-15s  %-7s  %-16s  %-30s  %s$R" IP KIND NAMESPACE NAME DETAIL ;;
     *)        print -rn -- "" ;;
   esac
 }
@@ -273,7 +276,7 @@ case ${1:-} in
     # them every cycle; light views always fetch fresh. Manual reloads (view
     # switch, F5, --sync) use --feed and always fetch.
     local v=$(cat $KUBE_STATE/view 2>/dev/null); v=${v:-overview}
-    local ttl=0; case $v in overview) ttl=20;; config) ttl=45;; esac
+    local ttl=0; case $v in overview) ttl=20;; config) ttl=45;; ips) ttl=20;; esac
     local cf=$KUBE_STATE/feed.$v mt=0
     [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
     if (( ttl > 0 && $(date +%s) - mt < ttl )); then cat $cf; else "$SELF" --feed; fi ;;

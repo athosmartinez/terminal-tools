@@ -235,3 +235,21 @@ feed_config() {
         printf "%s%s%s%s%s%s%s%s%s\n", disp, d, t, d, ns, d, t, d, name }'
   rm -rf $tmp
 }
+
+# ── feed: ips ────────────────────────────────────────────────────────────────
+# Every IP in the cluster in one table: pod IPs, Service ClusterIPs and external
+# IPs, node addresses, ingress external IPs. Columns: ip · kind · ns · name ·
+# detail. Rows arrive sorted numerically by IP from ip_index, so a subnet reads
+# as a block. Honors $KUBE_NS for namespaced rows; nodes are cluster-scoped and
+# always show, as in the nodes view.
+feed_ips() {
+  local d=$DELIM
+  ip_index | awk -F'\t' -v d="$d" -v nsflt="$KUBE_NS" '
+    { ip=$1; type=$2; ns=$3; kind=$4; name=$5; extra=$6
+      if (nsflt != "" && type != "node" && ns != nsflt) next
+      kc=(type=="pod")?"36":(type=="svc")?"32":(type=="node")?"35":"34"
+      nsout=(type=="node")?"":ns
+      disp=sprintf("\033[1m%-15.15s\033[0m  \033[%sm%-7s\033[0m  %-16.16s  %-30.30s  \033[38;5;243m%-.28s\033[0m",
+        ip, kc, type, ns, name, extra)
+      printf "%s%s%s%s%s%s%s%s%s\n", disp, d, type, d, nsout, d, kind, d, name }'
+}
