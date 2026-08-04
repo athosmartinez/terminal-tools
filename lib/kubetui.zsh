@@ -40,6 +40,70 @@ collect_workloads() {
   rm -rf $tmp
 }
 
+# ── IP index ─────────────────────────────────────────────────────────────────
+# Turns the four raw kubectl dumps in <dir> into one TSV row per IP:
+#   ip \t type \t ns \t kind \t name \t extra
+# Sorted numerically by IP, so subnets group together instead of sorting as
+# text  10.9 before 10.42 . Split from ip_index so it can be exercised with
+# fixture files, with no cluster in reach.
+_ip_rows() {
+  local d=$1
+  awk -v OFS='\t' -v podf="$d/pods" -v svcf="$d/svc" -v nodef="$d/nodes" -v ingf="$d/ing" '
+    function key(ip,   a, n) {
+      n = split(ip, a, ".")
+      if (n != 4) return "0000000000"
+      return sprintf("%010d", ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4])
+    }
+    function emit(ip, type, ns, kind, name, extra) {
+      if (ip == "" || ip == "<none>" || ip == "None") return
+      print key(ip), ip, type, ns, kind, name, extra
+    }
+    function emit_list(list, type, ns, kind, name, extra,   parts, m, i) {
+      m = split(list, parts, ",")
+      for (i = 1; i <= m; i++) emit(parts[i], type, ns, kind, name, extra)
+    }
+    BEGIN {
+      while ((getline l < podf) > 0) {
+        n = split(l, a, " "); if (n < 5) continue
+        emit(a[3], "pod", a[1], "pod", a[2], a[4] " · " a[5])
+      }
+      while ((getline l < svcf) > 0) {
+        n = split(l, a, " "); if (n < 6) continue
+        emit(a[3], "svc", a[1], "svc", a[2], "ClusterIP · " a[6])
+        emit_list(a[5], "svc", a[1], "svc", a[2], "ExternalIP · " a[4])
+      }
+      while ((getline l < nodef) > 0) {
+        n = split(l, a, " "); if (n < 4) continue
+        st = (a[4] == "True") ? "Ready" : "NotReady"
+        emit_list(a[2], "node", "-", "node", a[1], "InternalIP · " st)
+        emit_list(a[3], "node", "-", "node", a[1], "ExternalIP · " st)
+      }
+      while ((getline l < ingf) > 0) {
+        n = split(l, a, " "); if (n < 4) continue
+        emit_list(a[3], "ingress", a[1], "ingress", a[2], "ExternalIP · " a[4])
+      }
+      exit
+    }' | sort -t$'\t' -k1,1 | cut -f2-
+}
+
+# Every IP in the cluster: pod IPs, Service ClusterIPs and external LoadBalancer
+# IPs, node internal/external addresses, ingress external IPs. The four kubectl
+# calls are independent and run in parallel  wall time ≈ slowest single call .
+ip_index() {
+  local tmp; tmp=$(mktemp -d) || return
+  ( kubectl get pods -A --no-headers \
+      -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,IP:.status.podIP,NODE:.spec.nodeName,PHASE:.status.phase' 2>/dev/null > $tmp/pods ) &
+  ( kubectl get svc -A --no-headers \
+      -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,CIP:.spec.clusterIP,TYPE:.spec.type,EIP:.status.loadBalancer.ingress[*].ip,PORTS:.spec.ports[*].port' 2>/dev/null > $tmp/svc ) &
+  ( kubectl get nodes --no-headers \
+      -o custom-columns='NAME:.metadata.name,INT:.status.addresses[?(@.type=="InternalIP")].address,EXT:.status.addresses[?(@.type=="ExternalIP")].address,READY:.status.conditions[?(@.type=="Ready")].status' 2>/dev/null > $tmp/nodes ) &
+  ( kubectl get ingress -A --no-headers \
+      -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,IP:.status.loadBalancer.ingress[*].ip,HOST:.spec.rules[*].host' 2>/dev/null > $tmp/ing ) &
+  wait
+  _ip_rows $tmp
+  rm -rf $tmp
+}
+
 to_fzf_lines() {
   awk -F'\t' -v d="$DELIM" -v pal_s="$KUBETUI_PALETTE" '
     BEGIN { n = split(pal_s, pal, " ") }
