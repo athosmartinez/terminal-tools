@@ -28,6 +28,12 @@ docs live in `README.md`.
 entry point sets `SELF=${0:A}` and sources `${0:A:h}/lib/...` (so `lib/` travels
 with the repo via the symlink; `:A` resolves the symlink to the repo path).
 
+The `ips` view (kube) and `logs <ip>` / `^F` share one index: `ip_index` in
+`lib/kubetui.zsh` emits `ip \t type \t ns \t kind \t name \t extra` for every
+pod / Service / node / ingress address, and `ip_lookup` filters it by exact IP
+with priority pod > svc > node > ingress. `_ip_rows` is split out from the
+kubectl calls so it can be tested against fixture files with no cluster.
+
 ## Architecture: the single-fzf pattern (kube, and mirrored in logs/ports)
 
 There is **one persistent fzf per session** — it never relaunches per keypress
@@ -44,8 +50,8 @@ fzf bindings that read/write **file-based state** and update the UI in place:
   drive the list + auto-refresh.
 - kube dispatches: `--feed [view]` (fresh; also warms `feed.<view>`),
   `--auto-feed` (timer only — serves the feed cache within a longer TTL for
-  heavy views overview=20s/config=45s so the 5s timer doesn't hammer them; light
-  views fetch fresh), `--nav`, `--cycle-sort`, `--toggle-live` (unbind/rebind
+  heavy views overview=20s/ips=20s/config=45s so the 5s timer doesn't hammer
+  them; light views fetch fresh), `--nav`, `--cycle-sort`, `--toggle-live` (unbind/rebind
   `load`), `--sync` (after an action: clears `pv.*`, re-emits header + reload),
   `--act <key> <type> <ns> <kind> <name>` (runs the action via `run_action`),
   `--pick-ns`, `--preview` (caches `pv.*`, default TTL 20s).

@@ -11,7 +11,7 @@ follower (`logs`), and a TCP-port process killer (`ports`).
 
 | Tool | What it does |
 |------|--------------|
-| **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
+| **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports (macOS), with a confirm step. |
 
@@ -30,7 +30,7 @@ one color per process, and live details in the preview pane:
 current tab, and columns stay labeled and aligned:
 
 ```text
-overview │ pods │ nodes │ events │ ingress │ config     ns: all   sort: name   live: 5s
+overview │ pods │ nodes │ events │ ingress │ config │ ips     ns: all   sort: name   live: 5s
 Enter logs  ^R restart  ^S scale  ^D describe  ^Y yaml  ^X delete  ^P pods  ^A more  │  ^N ns  ^T sort  ^L live  Tab view  ? help  Esc
 NAMESPACE           NAME                        KIND    READY   IMAGE                 CPU      MEM
 ● platform          api-gateway                 deploy  1/2     api-gateway:2.3.1      12m     40Mi
@@ -81,6 +81,7 @@ so it travels with the repo.
 kube                 # open the cockpit
 logs                 # pick a workload and follow its logs
 logs <query>         # 1 match → follow immediately
+logs <ip>            # resolve a pod / service / node / ingress IP and follow it
 ports                # pick a listening process to kill
 ports <port|name>    # filter; `ports kill <q>` to kill directly
 <tool> -h            # help  ·  press ? inside any picker for the keys
@@ -100,8 +101,14 @@ exec/shell, port-forward, cordon/uncordon/drain, cronjob trigger, secret reveal,
 `kubectl cp`, and more. Mutations always confirm first; `^Y` in the menu copies
 the resolved command to the clipboard.
 
-**`logs`** — `Enter` follow · `^P` pod view · `^N` namespace scope · `^T` sort
-(name / ns / unready first) · `?` help · `Esc` quit
+The **`ips` view** (last tab) lists every IP in the cluster in one table — pod
+IPs, Service ClusterIPs and external IPs, node addresses, ingress external IPs —
+sorted numerically, so typing part of an address narrows to a subnet. `Enter`
+does the right thing per row: logs for a pod, port-forward for a Service, pods
+for a node.
+
+**`logs`** — `Enter` follow · `^P` pod view · `^F` follow by IP · `^N` namespace
+scope · `^T` sort (name / ns / unready first) · `?` help · `Esc` quit
 
 **`ports`** — `Enter` kill · `Tab` multi-select · `^T` sort (port / process / pid
 / user) · `^O` toggle own/all processes · `?` help · `Esc` cancel
