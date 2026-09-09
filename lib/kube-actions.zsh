@@ -73,7 +73,7 @@ cmd_argv() {
     trigger)    CMD=(kubectl create job --from=cronjob/$name $name-manual-${1:-'<ts>'} -n $ns) ;;
     reveal)     CMD=(kubectl get secret $name -n $ns -o go-template='{{range $k,$v := .data}}{{$k}}={{$v | base64decode}}{{"\n"}}{{end}}') ;;
     view-cm)    CMD=(kubectl get configmap $name -n $ns -o go-template='{{range $k,$v := .data}}{{$k}}:{{"\n"}}{{$v}}{{"\n\n"}}{{end}}') ;;
-    open-url)   CMD=(open '<url>') ;;
+    open-url)   local o=$(url_opener); CMD=(${o:-open} '<url>') ;;
     pods-on)    CMD=(kubectl get pods -A -o wide --field-selector spec.nodeName=$name) ;;
     *)          CMD=(true) ;;
   esac
@@ -119,14 +119,15 @@ follow_dispatch() {
 
 # Opens (or copies) the ingress URL derived from its host + tls.
 open_ingress_url() {
-  local ns=$1 name=$2 host tls scheme=http url
+  local ns=$1 name=$2 host tls scheme=http url opener
   host=$(kubectl get ingress $name -n $ns -o jsonpath='{.spec.rules[0].host}' 2>/dev/null)
   tls=$(kubectl get ingress $name -n $ns -o jsonpath='{.spec.tls[0].hosts[0]}' 2>/dev/null)
   [[ -z $host ]] && { print -P "%F{yellow}no host on this ingress%f"; sleep 1; return }
   [[ -n $tls ]] && scheme=https
   url="$scheme://$host"
-  show_cmd open "$url"
-  if command -v open >/dev/null 2>&1; then open "$url"; else clip "$url"; fi
+  opener=$(url_opener)
+  if [[ -n $opener ]]; then show_cmd $opener "$url"; $opener "$url"
+  else clip "$url"; fi
   sleep 0.6
 }
 

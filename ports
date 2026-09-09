@@ -1,13 +1,17 @@
 #!/usr/bin/env zsh
 #
-# ports — view, search and kill processes listening on TCP ports (macOS)
+# ports — view, search and kill processes listening on TCP ports
 #
 #   ports              open the interactive picker (fzf)
 #   ports <query>      show listening ports matching a port / name / PID
 #   ports kill <query> kill whatever matches (with confirmation)
 #   ports -h|--help    show help
 #
-# Depends on: lsof (system), fzf (brew).
+# Depends on: lsof (ships with macOS; "apt install lsof" on Debian/Ubuntu), fzf.
+#
+# Runs on macOS, Linux and WSL2. Inside WSL only the processes in the WSL
+# network namespace are listed — a port held by a Windows process is invisible
+# here, and must be handled on the Windows side.
 
 emulate -L zsh
 setopt no_nomatch
@@ -15,6 +19,11 @@ setopt no_nomatch
 SELF=${0:A}
 DELIM=$'\037'          # unit separator: hidden field delimiter for fzf
 MYUID=$(id -u)
+
+command -v lsof >/dev/null 2>&1 || {
+  print -u2 "ports: lsof not found — install it (Debian/Ubuntu: apt install lsof)"
+  exit 1
+}
 
 # ── data collection ──────────────────────────────────────────────────────────
 # Emits deduped rows, one per (pid,port):  port \t command \t pid \t user \t uid

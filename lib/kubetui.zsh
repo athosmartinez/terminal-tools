@@ -355,21 +355,68 @@ run_cmd() {
   run_or_dry "$@"
 }
 
-# Copies text to the clipboard (macOS pbcopy); warns if unavailable.
+# ── platform helpers ─────────────────────────────────────────────────────
+# macOS, Linux and WSL2 differ in only a handful of system commands. Those live
+# here — call these helpers instead of the raw command, so a new platform is one
+# edit in one place.
+
+# Epoch seconds of a file's last modification, 0 when it cannot be read.
+# stat's format flag is one of the few that differ between BSD and GNU.
+mtime() {
+  local out
+  case $OSTYPE in
+    darwin*|*bsd*) out=$(stat -f %m "$1" 2>/dev/null) ;;
+    *)             out=$(stat -c %Y "$1" 2>/dev/null) ;;
+  esac
+  print -- ${out:-0}
+}
+
+# Copies text to the clipboard with whatever the platform provides.
 clip() {
-  if command -v pbcopy >/dev/null 2>&1; then
-    print -rn -- "$1" | pbcopy
-    print -P "%F{green}✓ copied to clipboard%f"
+  local -a cmd
+  if   command -v pbcopy   >/dev/null 2>&1; then cmd=(pbcopy)                     # macOS
+  elif command -v wl-copy  >/dev/null 2>&1; then cmd=(wl-copy)                    # Wayland
+  elif command -v xclip    >/dev/null 2>&1; then cmd=(xclip -selection clipboard) # X11
+  elif command -v xsel     >/dev/null 2>&1; then cmd=(xsel --clipboard --input)   # X11
+  elif command -v clip.exe >/dev/null 2>&1; then cmd=(clip.exe)                   # WSL2
   else
-    print -P "%F{yellow}pbcopy not available%f"
+    print -P "%F{yellow}no clipboard tool found — install xclip, wl-copy or xsel%f"
+    return 1
+  fi
+  print -rn -- "$1" | "${cmd[@]}"
+  print -P "%F{green}✓ copied to clipboard%f"
+}
+
+# Name of the command that opens a URL in the desktop browser, empty when there
+# is none. Finding it is separate from running it so the caller can print the
+# real command first — command transparency holds here too.
+url_opener() {
+  local c
+  [[ $OSTYPE == darwin* ]] && command -v open >/dev/null 2>&1 && { print -- open; return }
+  for c in xdg-open wslview explorer.exe; do
+    command -v $c >/dev/null 2>&1 && { print -- $c; return }
+  done
+  return 1
+}
+
+# True when something is listening on the given TCP port. Uses lsof (macOS,
+# and Linux when installed) or ss (Linux/WSL); with neither, says "free" so a
+# missing tool never blocks a port-forward.
+port_busy() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:$1 -sTCP:LISTEN >/dev/null 2>&1
+  elif command -v ss >/dev/null 2>&1; then
+    [[ -n $(ss -ltnH "sport = :$1" 2>/dev/null) ]]
+  else
+    return 1
   fi
 }
 
-# Smallest free TCP port >= base (default 8080). Uses lsof; falls back to base.
+# Smallest free TCP port >= base (default 8080); falls back to base.
 free_port() {
   local -i p=${1:-8080}
   while (( p < 65535 )); do
-    lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null 2>&1 || { print -- $p; return }
+    port_busy $p || { print -- $p; return }
     (( p++ ))
   done
   print -- ${1:-8080}

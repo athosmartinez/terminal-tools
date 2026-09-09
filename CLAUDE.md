@@ -21,7 +21,8 @@ docs live in `README.md`.
 
 - `kube` — a keyboard-first Kubernetes cockpit (single persistent fzf).
 - `logs` — follow workload logs across namespaces (one color per pod).
-- `ports` — view/kill processes on TCP ports (macOS `lsof`).
+- `ports` — view/kill processes on TCP ports (`lsof`). Self-contained on purpose:
+  it sources no `lib/`, so it can be copied to a machine on its own.
 
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each
@@ -116,4 +117,21 @@ install.sh                 symlinks the 3 entry points into ~/.local/bin
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
-`lsof` (ports, macOS).
+`lsof` (ports).
+
+## Platform (macOS / Linux / WSL2)
+
+Never call a platform-dependent command directly — the four that differ live in
+`lib/kubetui.zsh` and are the single place to extend:
+
+- `mtime <file>` — epoch mtime; `stat -f %m` (BSD) vs `stat -c %Y` (GNU). The
+  feed and preview caches read it; a wrong value only costs a refetch, which is
+  why the BSD-only form went unnoticed on Linux for so long.
+- `clip <text>` — `pbcopy` / `wl-copy` / `xclip` / `xsel` / `clip.exe`.
+- `url_opener` — prints the opener's name (`open` / `xdg-open` / `wslview` /
+  `explorer.exe`) or fails; kept separate from running it so `show_cmd` prints
+  the real command.
+- `port_busy <port>` — `lsof` or `ss`; unknown means "free".
+
+`ports` is standalone, so it re-checks `lsof` itself at startup. Under WSL2 it
+only sees the WSL network namespace, never the Windows one.

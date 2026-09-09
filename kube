@@ -291,7 +291,7 @@ case ${1:-} in
     local v=$(cat $KUBE_STATE/view 2>/dev/null); v=${v:-overview}
     local ttl=0; case $v in overview) ttl=20;; config) ttl=45;; ips) ttl=20;; esac
     local cf=$KUBE_STATE/feed.$v mt=0
-    [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
+    [[ -f $cf ]] && mt=$(mtime $cf)
     if (( ttl > 0 && $(date +%s) - mt < ttl )); then cat $cf; else "$SELF" --feed; fi ;;
   --nav)
     shift; local dir=$1 cur nx i n=$#VIEWS
@@ -320,7 +320,7 @@ case ${1:-} in
     # in the session state dir and dies with it.
     if [[ -n $KUBE_STATE && -d $KUBE_STATE ]]; then
       local cf=$KUBE_STATE/pv.${1:-x}.${2:-x}.${3:-x}.${4:-x} mt=0
-      [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
+      [[ -f $cf ]] && mt=$(mtime $cf)
       if (( $(date +%s) - mt < ${KUBE_PREVIEW_TTL:-20} )); then
         cat $cf
       else

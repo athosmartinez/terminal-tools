@@ -129,7 +129,7 @@ sync_hdr() { printf 'change-header(%s)+reload(%s --fzf-src)' "$(logs_header)" "$
 cached_preview() {
   if [[ -n $LOGS_STATE && -d $LOGS_STATE ]]; then
     local cf=$LOGS_STATE/pv.${1:-x}.${2:-x}.${3:-x} mt=0
-    [[ -f $cf ]] && mt=$(stat -f %m $cf 2>/dev/null)
+    [[ -f $cf ]] && mt=$(mtime $cf)
     if (( $(date +%s) - mt < ${LOGS_PREVIEW_TTL:-20} )); then cat $cf; return; fi
     do_preview "$@" | tee $cf.$$ >/dev/null && mv $cf.$$ $cf && cat $cf
   else

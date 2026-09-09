@@ -1,7 +1,7 @@
 # terminal-tools
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey.svg)
 ![Shell](https://img.shields.io/badge/shell-zsh-4EAA25.svg?logo=zsh&logoColor=white)
 ![Built with fzf](https://img.shields.io/badge/built%20with-fzf-1E90FF.svg)
 
@@ -13,7 +13,7 @@ follower (`logs`), and a TCP-port process killer (`ports`).
 |------|--------------|
 | **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload across all namespaces — one color per pod, auto-reconnect on restarts. |
-| **`ports`** | View and kill processes listening on TCP ports (macOS), with a confirm step. |
+| **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -60,7 +60,11 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
 - `kube` / `logs`: [`kubectl`](https://kubernetes.io/docs/tasks/tools/) with a
   configured context (uses the **current** context; metrics need
   `metrics-server`)
-- `ports`: `lsof` (ships with macOS)
+- `ports`: `lsof` (ships with macOS; `apt install lsof` on Debian/Ubuntu)
+- Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
+  `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
+  `xdg-open`, `wslview` or `explorer.exe`). Without them the action still tells
+  you what it would have done.
 
 ## Install
 
@@ -134,8 +138,15 @@ opens its pods; an Ingress IP no Service shares is identified only.
 
 ## Notes
 
-- `ports` is macOS-specific (`lsof` flags). `kube` / `logs` run wherever
-  `kubectl` + `fzf` do.
+- Runs on **macOS, Linux and WSL2**. The platform-dependent bits — file mtime,
+  clipboard, URL opener, port lister — are detected at runtime in
+  `lib/kubetui.zsh` (`mtime`, `clip`, `url_opener`, `port_busy`); `ports` carries
+  its own copy of what it needs.
+- **Inside WSL2, `ports` only sees the WSL network namespace.** A port held by a
+  Windows process is invisible to `lsof` there and has to be handled on the
+  Windows side (`Get-NetTCPConnection -State Listen`).
+- `ports` is a **single self-contained file** — copy just that one to a machine
+  and it works. `kube` and `logs` need `lib/` next to them.
 - Everything runs against your **current** `kubectl` context. There is no hidden
   state or config — the tools read live from the cluster.
 
