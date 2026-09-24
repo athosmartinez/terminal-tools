@@ -40,6 +40,37 @@ collect_workloads() {
   rm -rf $tmp
 }
 
+# Jobs as workload rows (ns \t name \t job \t state). A Job has no replicas, so
+# the last column is a word instead of ready/desired — see _job_state.
+# CronJob-owned Jobs are left out: they rotate every schedule tick and would
+# crowd the list with short-lived entries. Kept apart from collect_workloads
+# because kube lists Jobs in a view of their own, with job-specific actions.
+_JOB_FIELDS='{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.metadata.ownerReferences[0].kind}{"\t"}{.status.active}{"\t"}{.status.failed}{"\t"}{.status.conditions[?(@.type=="Complete")].status}{"\t"}{.status.conditions[?(@.type=="Failed")].status}{"\n"}'
+collect_jobs() {
+  kubectl get jobs -A -o jsonpath="{range .items[*]}$_JOB_FIELDS{end}" 2>/dev/null \
+    | awk -F'\t' '$3 != "CronJob"' | _job_state | sort -t$'\t' -k1,1 -k2,2
+}
+
+# State of one Job: running | retry N | done | failed | pending; nothing when
+# the Job does not exist.
+job_state() {
+  kubectl get job $2 -n $1 -o jsonpath="$_JOB_FIELDS" 2>/dev/null | _job_state | cut -f4
+}
+
+# The Complete/Failed conditions are the final word. While pods are active,
+# .status.failed counts earlier attempts, not a failed Job — so a retry reads
+# "retry N" rather than failed. ASCII and ≤7 chars to fit the status column.
+_job_state() {
+  awk -F'\t' -v OFS='\t' '
+    NF >= 7 {
+      if      ($6 == "True") st = "done"
+      else if ($7 == "True") st = "failed"
+      else if ($4 + 0 > 0)   st = ($5 + 0 > 0) ? "retry " ($5 + 0) : "running"
+      else                   st = "pending"
+      print $1, $2, "job", st
+    }'
+}
+
 # ── IP index ─────────────────────────────────────────────────────────────────
 # Turns the four raw kubectl dumps in <dir> into one TSV row per IP:
 #   ip \t type \t ns \t kind \t name \t extra
@@ -148,6 +179,10 @@ to_fzf_lines() {
       if (!($1 in c)) c[$1] = pal[(i++ % n) + 1]
       split($4, r, "/"); ready = r[1] + 0; des = r[2] + 0
       rc = (des == 0) ? "38;5;243" : (ready == des) ? "32" : (ready == 0) ? "31" : "33"
+      # Job rows carry a state word instead of ready/desired.
+      if ($4 == "running") rc = "32"
+      else if ($4 == "failed") rc = "31"
+      else if ($4 ~ /^(retry|pending)/) rc = "33"
       printf "\033[%sm%-20.20s\033[0m  \033[1m%-36.36s\033[0m  \033[38;5;243m%-7s\033[0m  \033[%sm%-7s\033[0m%s%s%s%s%s%s\n",
         c[$1], $1, $2, $3, rc, $4,  d, $1, d, $3, d, $2 }
   '
@@ -193,11 +228,25 @@ color_status() {
 follow_workload() {
   local ns=$1 kind=$2 name=$3
   local -i tail=$4 npods
+  local st
   local sel; sel=$(resolve_selector $ns $kind $name)
-  [[ -z $sel ]] && { print -P "%F{red}✗  could not resolve selector of $kind/$name in $ns%f"; return 1 }
+  if [[ -z $sel ]]; then
+    [[ $kind == job ]] && ! kubectl get job $name -n $ns >/dev/null 2>&1 \
+      && { print -P "%F{red}✗  job $ns/$name no longer exists%f"; return 1 }
+    print -P "%F{red}✗  could not resolve selector of $kind/$name in $ns%f"; return 1
+  fi
 
   while true; do
     npods=$(kubectl get pods -n $ns -l $sel --no-headers 2>/dev/null | grep -c '')
+    if (( npods == 0 )) && [[ $kind == job ]]; then
+      # A finished Job never gets pods back; once ttlSecondsAfterFinished (or
+      # a manual cleanup) removed them, its logs are gone with them.
+      st=$(job_state $ns $name)
+      case $st in
+        '')          print -P "%F{red}✗  job $ns/$name no longer exists%f"; return 1 ;;
+        done|failed) print -P "%F{red}✗  job $ns/$name is $st and its pods were removed — no logs left to show%f"; return 1 ;;
+      esac
+    fi
     if (( npods == 0 )); then
       print -P "%F{yellow}⏳ $ns/$name: waiting for pods... (Ctrl-C to quit)%f"
       sleep 3
@@ -207,6 +256,16 @@ follow_workload() {
     print -P "%F{cyan}\$%f kubectl logs -f -n $ns -l $sel --tail=$tail --prefix --all-containers --max-log-requests=20"
     kubectl logs -f -n $ns -l $sel --tail=$tail --prefix --all-containers --max-log-requests=20 | colorize
     (( $pipestatus[1] == 130 )) && return 130
+    # A finished Job's stream ends for good — reconnecting would only replay
+    # the tail every few seconds.
+    if [[ $kind == job ]]; then
+      st=$(job_state $ns $name)
+      case $st in
+        done)   print -P "%F{green}✓  job $ns/$name completed%f"; return 0 ;;
+        failed) print -P "%F{red}✗  job $ns/$name failed%f"; return 1 ;;
+        '')     print -P "%F{red}✗  job $ns/$name no longer exists%f"; return 1 ;;
+      esac
+    fi
     tail=10
     print -P "%F{yellow}↻ stream ended — reconnecting...%f"
     sleep 2
@@ -244,15 +303,18 @@ do_preview() {
   print
   # Services fronting this workload — their ClusterIP is the stable virtual IP
   # for the deployment (a Deployment itself has no IP of its own).
-  print -P "%B%F{cyan}Services (ClusterIP)%f%b"
-  local first=${sel%%,*}
-  local svcs; svcs=$(kubectl get svc -n $ns -o wide 2>/dev/null | awk -v f="$first" 'NR==1 || (f!="" && index($0, f))')
-  if [[ $(print -r -- "$svcs" | grep -c '') -le 1 ]]; then
-    print -- "(no service selecting $first)"
-  else
-    print -r -- "$svcs"
+  # A Job's selector is its generated controller-uid, which no Service targets.
+  if [[ $kind != job ]]; then
+    print -P "%B%F{cyan}Services (ClusterIP)%f%b"
+    local first=${sel%%,*}
+    local svcs; svcs=$(kubectl get svc -n $ns -o wide 2>/dev/null | awk -v f="$first" 'NR==1 || (f!="" && index($0, f))')
+    if [[ $(print -r -- "$svcs" | grep -c '') -le 1 ]]; then
+      print -- "(no service selecting $first)"
+    else
+      print -r -- "$svcs"
+    fi
+    print
   fi
-  print
   print -P "%B%F{cyan}── last lines ──%f%b"
   kubectl logs -n $ns -l $sel --tail=6 --prefix --all-containers 2>/dev/null | tail -20 | colorize -f
 }

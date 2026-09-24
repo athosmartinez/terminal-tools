@@ -12,7 +12,7 @@ follower (`logs`), and a TCP-port process killer (`ports`).
 | Tool | What it does |
 |------|--------------|
 | **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
-| **`logs`** | Follow logs of any workload across all namespaces — one color per pod, auto-reconnect on restarts. |
+| **`logs`** | Follow logs of any workload — Deployments, StatefulSets, DaemonSets and standalone Jobs — across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
@@ -90,6 +90,11 @@ ports                # pick a listening process to kill
 ports <port|name>    # filter; `ports kill <q>` to kill directly
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
+
+In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
+after N failed attempts), `done`, `failed` or `pending`. Following a Job stops
+once it finishes, and says so when its pods are already gone
+(`ttlSecondsAfterFinished`). CronJob-spawned Jobs are not listed.
 
 ### Keys
 
