@@ -25,10 +25,15 @@ docs live in `README.md`.
   it sources no `lib/`, so it can be copied to a machine on its own.
 - `monitor` — macOS only, not a TUI: `monitor off|on|status` disables/enables
   the external display via the private `CGSConfigureDisplayEnabled` (resolved
-  with `dlsym`), so a USB-C monitor keeps charging with no video. The zsh
-  wrapper compiles `lib/monitor.swift` into `~/.cache/terminal-tools/monitor`
-  when the binary is missing or older than the source (`-nt`), so repo edits
-  stay live. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
+  with `dlsym`), so a USB-C monitor keeps charging with no video. Core logic is
+  `lib/monitor/DisplayToggle.swift`, shared by the CLI (`cli/main.swift`) and
+  the MonitorBar menu bar app (`app/main.swift`). The zsh wrapper compiles the
+  CLI into `~/.cache/terminal-tools/monitor` when the binary is missing or
+  older than a source (`-nt`), so repo edits stay live; the app is NOT live —
+  `monitor app` rebuilds `~/Applications/MonitorBar.app` (Info.plist with
+  `LSUIElement`, ad-hoc `codesign` required by `SMAppService`) and relaunches
+  it. Both compile with `-swift-version 5`. The app refreshes its icon from
+  `CGDisplayRegisterReconfigurationCallback`, never by polling. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
   because a disabled display leaves the active list. No confirm on purpose: it
   is instantly reversible, and `off` refuses when the built-in panel is
   inactive. Testing `off` blanks the owner's monitor — let the owner run it.
@@ -122,8 +127,10 @@ kube  logs  ports          entry points (zsh)
 lib/kubetui.zsh            shared core (feeds helpers, follow engine, previews)
 lib/kube-actions.zsh       kube action registry + menu + run_action
 lib/kube-data.zsh          kube per-view feeds + metrics join
-monitor                    entry point (zsh wrapper, macOS) → lib/monitor.swift
-lib/monitor.swift          display off/on (private CoreGraphics call)
+monitor                    entry point (zsh wrapper, macOS) → lib/monitor/
+lib/monitor/DisplayToggle.swift  display off/on core (private CoreGraphics call)
+lib/monitor/cli/main.swift       `monitor on|off|status`
+lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
 install.sh                 symlinks the 4 entry points into ~/.local/bin
 ```
 

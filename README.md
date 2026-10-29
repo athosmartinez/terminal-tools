@@ -93,6 +93,7 @@ ports                # pick a listening process to kill
 ports <port|name>    # filter; `ports kill <q>` to kill directly
 monitor off          # stop video to the external display; USB-C charging continues
 monitor on           # bring it back  ·  `monitor` alone shows the state
+monitor app          # build + open MonitorBar, the menu bar toggle
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
 
@@ -100,8 +101,14 @@ monitor on           # bring it back  ·  `monitor` alone shows the state
 same kind of switch display utilities use, so a future macOS may break it. It
 refuses `off` while the built-in display is inactive (lid closed), so the Mac is
 never left without a screen; unplugging and replugging the cable also restores
-the display. The wrapper compiles `lib/monitor.swift` on first run and whenever
-the source changes (binary cached in `~/.cache/terminal-tools/`).
+the display. The wrapper compiles `lib/monitor/` on first run and whenever the
+source changes (binary cached in `~/.cache/terminal-tools/`).
+
+`monitor app` builds **MonitorBar** into `~/Applications/MonitorBar.app`: a menu
+bar icon (`display` when on, `tv.slash` when off) with a one-click toggle and a
+"Launch at Login" switch, enabled on first launch. It is an agent app — no Dock
+icon, no Cmd-Tab entry — and event-driven (no polling), so it idles at ~0% CPU
+and ~20 MB. Run `monitor app` again after changing the Swift sources.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

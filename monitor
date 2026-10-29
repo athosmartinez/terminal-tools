@@ -3,9 +3,10 @@
 # monitor — turn the external display off/on without unplugging it (macOS).
 # The USB-C cable stays connected, so a Power Delivery monitor keeps charging.
 #
-# The work is done by lib/monitor.swift (it needs a private CoreGraphics call).
-# This wrapper compiles it on first run and whenever the source is newer than
-# the cached binary, so editing the repo stays live like the other tools.
+# The work is done by lib/monitor/ (Swift; it needs a private CoreGraphics
+# call). This wrapper compiles the CLI on first run and whenever a source is
+# newer than the cached binary, so editing the repo stays live like the other
+# tools. `monitor app` builds the menu bar app from the same core.
 #
 emulate -L zsh
 
@@ -16,6 +17,8 @@ monitor — turn the external display off/on without unplugging it (macOS)
   monitor off       stop sending video to the external display (charging continues)
   monitor on        bring it back
   monitor status    show whether it is on (default)
+  monitor app       build and open MonitorBar, a menu bar toggle
+                    (~/Applications/MonitorBar.app; no Dock icon, starts at login)
 
 Refuses 'off' while the built-in display is inactive (lid closed), so the Mac
 is never left without a screen. Unplugging and replugging the cable also
@@ -32,17 +35,60 @@ if [[ $(uname -s) != Darwin ]]; then
   exit 1
 fi
 
-SRC=${0:A:h}/lib/monitor.swift
-BIN=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-tools/monitor
+if ! (( $+commands[swiftc] )); then
+  need_swiftc() { print -u2 "monitor: swiftc not found — install the Xcode Command Line Tools: xcode-select --install"; exit 1 }
+else
+  need_swiftc() { : }
+fi
 
-if [[ ! -x $BIN || $SRC -nt $BIN ]]; then
-  if ! (( $+commands[swiftc] )); then
-    print -u2 "monitor: swiftc not found — install the Xcode Command Line Tools: xcode-select --install"
-    exit 1
-  fi
-  mkdir -p ${BIN:h}
-  print -u2 "monitor: compiling ${SRC:t}…"
-  swiftc -O "$SRC" -o "$BIN" || exit 1
+SRC=${0:A:h}/lib/monitor
+CORE=$SRC/DisplayToggle.swift
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-tools
+
+# Swift 5 language mode: the app's C display callback and AppKit delegate
+# don't need Swift 6 strict-concurrency annotations for a single-threaded tool.
+build() {  # build <output> <sources...>
+  local out=$1; shift
+  need_swiftc
+  mkdir -p ${out:h}
+  print -u2 "\$ swiftc -O -swift-version 5 ${@:t} -o $out"
+  swiftc -O -swift-version 5 "$@" -o "$out"
+}
+
+if [[ $1 == app ]]; then
+  APP=$HOME/Applications/MonitorBar.app
+  BIN=$APP/Contents/MacOS/MonitorBar
+  build "$BIN" "$CORE" "$SRC/app/main.swift" || exit 1
+  cat > $APP/Contents/Info.plist <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>         <string>com.athosmartinez.terminal-tools.monitorbar</string>
+  <key>CFBundleName</key>               <string>MonitorBar</string>
+  <key>CFBundleExecutable</key>         <string>MonitorBar</string>
+  <key>CFBundlePackageType</key>        <string>APPL</string>
+  <key>CFBundleShortVersionString</key> <string>1.0</string>
+  <key>CFBundleVersion</key>            <string>1</string>
+  <key>LSMinimumSystemVersion</key>     <string>13.0</string>
+  <key>LSUIElement</key>                <true/>
+</dict>
+</plist>
+EOF
+  # Ad-hoc signature: required to run on Apple Silicon and for SMAppService
+  # (Launch at Login) to accept the bundle.
+  print -u2 "\$ codesign --force --sign - $APP"
+  codesign --force --sign - "$APP" || exit 1
+  # Replace a running copy so the new build takes effect.
+  pkill -x MonitorBar && sleep 0.5
+  print -u2 "\$ open $APP"
+  open "$APP"
+  exit
+fi
+
+BIN=$CACHE/monitor
+if [[ ! -x $BIN || $CORE -nt $BIN || $SRC/cli/main.swift -nt $BIN ]]; then
+  build "$BIN" "$CORE" "$SRC/cli/main.swift" || exit 1
 fi
 
 exec "$BIN" "$@"
