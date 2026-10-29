@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 #
-# install.sh — symlink kube, logs and ports into ~/.local/bin.
+# install.sh — symlink kube, logs, ports and monitor into ~/.local/bin.
 # The shared lib/ is resolved relative to each script, so it stays in the repo.
 #
 #   ./install.sh              symlink into ~/.local/bin (default)
@@ -13,7 +13,7 @@ REPO=${0:A:h}
 BIN=${BIN:-$HOME/.local/bin}
 mkdir -p "$BIN"
 
-for tool in kube logs ports; do
+for tool in kube logs ports monitor; do
   src="$REPO/$tool"
   dst="$BIN/$tool"
   if [[ -e $dst && ! -L $dst ]]; then
@@ -30,4 +30,4 @@ case ":$PATH:" in
 esac
 
 print
-print -P "Dependencies: %F{cyan}fzf%f (required), %F{cyan}kubectl%f (kube/logs), %F{cyan}lsof%f (ports)."
+print -P "Dependencies: %F{cyan}fzf%f (required), %F{cyan}kubectl%f (kube/logs), %F{cyan}lsof%f (ports), %F{cyan}swiftc%f (monitor, macOS)."

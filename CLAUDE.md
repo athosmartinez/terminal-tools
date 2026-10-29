@@ -23,6 +23,15 @@ docs live in `README.md`.
 - `logs` — follow workload logs across namespaces (one color per pod).
 - `ports` — view/kill processes on TCP ports (`lsof`). Self-contained on purpose:
   it sources no `lib/`, so it can be copied to a machine on its own.
+- `monitor` — macOS only, not a TUI: `monitor off|on|status` disables/enables
+  the external display via the private `CGSConfigureDisplayEnabled` (resolved
+  with `dlsym`), so a USB-C monitor keeps charging with no video. The zsh
+  wrapper compiles `lib/monitor.swift` into `~/.cache/terminal-tools/monitor`
+  when the binary is missing or older than the source (`-nt`), so repo edits
+  stay live. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
+  because a disabled display leaves the active list. No confirm on purpose: it
+  is instantly reversible, and `off` refuses when the built-in panel is
+  inactive. Testing `off` blanks the owner's monitor — let the owner run it.
 
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each
@@ -113,11 +122,13 @@ kube  logs  ports          entry points (zsh)
 lib/kubetui.zsh            shared core (feeds helpers, follow engine, previews)
 lib/kube-actions.zsh       kube action registry + menu + run_action
 lib/kube-data.zsh          kube per-view feeds + metrics join
-install.sh                 symlinks the 3 entry points into ~/.local/bin
+monitor                    entry point (zsh wrapper, macOS) → lib/monitor.swift
+lib/monitor.swift          display off/on (private CoreGraphics call)
+install.sh                 symlinks the 4 entry points into ~/.local/bin
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
-`lsof` (ports).
+`lsof` (ports), `swiftc` (monitor).
 
 ## Platform (macOS / Linux / WSL2)
 

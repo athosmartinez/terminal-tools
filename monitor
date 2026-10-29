@@ -1,0 +1,48 @@
+#!/usr/bin/env zsh
+#
+# monitor — turn the external display off/on without unplugging it (macOS).
+# The USB-C cable stays connected, so a Power Delivery monitor keeps charging.
+#
+# The work is done by lib/monitor.swift (it needs a private CoreGraphics call).
+# This wrapper compiles it on first run and whenever the source is newer than
+# the cached binary, so editing the repo stays live like the other tools.
+#
+emulate -L zsh
+
+usage() {
+  cat <<'EOF'
+monitor — turn the external display off/on without unplugging it (macOS)
+
+  monitor off       stop sending video to the external display (charging continues)
+  monitor on        bring it back
+  monitor status    show whether it is on (default)
+
+Refuses 'off' while the built-in display is inactive (lid closed), so the Mac
+is never left without a screen. Unplugging and replugging the cable also
+restores the display.
+EOF
+}
+
+case $1 in
+  -h|--help) usage; exit 0 ;;
+esac
+
+if [[ $(uname -s) != Darwin ]]; then
+  print -u2 "monitor: macOS only"
+  exit 1
+fi
+
+SRC=${0:A:h}/lib/monitor.swift
+BIN=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-tools/monitor
+
+if [[ ! -x $BIN || $SRC -nt $BIN ]]; then
+  if ! (( $+commands[swiftc] )); then
+    print -u2 "monitor: swiftc not found — install the Xcode Command Line Tools: xcode-select --install"
+    exit 1
+  fi
+  mkdir -p ${BIN:h}
+  print -u2 "monitor: compiling ${SRC:t}…"
+  swiftc -O "$SRC" -o "$BIN" || exit 1
+fi
+
+exec "$BIN" "$@"

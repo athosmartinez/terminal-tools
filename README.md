@@ -7,13 +7,15 @@
 
 Three keyboard-driven terminal TUIs built on
 [fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
-follower (`logs`), and a TCP-port process killer (`ports`).
+follower (`logs`), and a TCP-port process killer (`ports`) — plus `monitor`, a
+small macOS command that blanks the external display while USB-C keeps charging.
 
 | Tool | What it does |
 |------|--------------|
 | **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload — Deployments, StatefulSets, DaemonSets and standalone Jobs — across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
+| **`monitor`** | macOS only, no TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -61,6 +63,7 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
   configured context (uses the **current** context; metrics need
   `metrics-server`)
 - `ports`: `lsof` (ships with macOS; `apt install lsof` on Debian/Ubuntu)
+- `monitor`: macOS with `swiftc` (Xcode Command Line Tools: `xcode-select --install`)
 - Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
   `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
   `xdg-open`, `wslview` or `explorer.exe`). Without them the action still tells
@@ -71,10 +74,10 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
 ```sh
 git clone https://github.com/athosmartinez/terminal-tools.git
 cd terminal-tools
-./install.sh            # symlinks kube, logs, ports into ~/.local/bin
+./install.sh            # symlinks kube, logs, ports, monitor into ~/.local/bin
 ```
 
-`install.sh` symlinks the three entry points into `~/.local/bin` (make sure it's
+`install.sh` symlinks the four entry points into `~/.local/bin` (make sure it's
 on your `$PATH`). Because they're symlinks, editing files in the repo updates the
 installed tools instantly. The shared `lib/` is resolved relative to each script,
 so it travels with the repo.
@@ -88,8 +91,17 @@ logs <query>         # 1 match → follow immediately
 logs <ip>            # resolve a pod / service / node / ingress IP and follow it
 ports                # pick a listening process to kill
 ports <port|name>    # filter; `ports kill <q>` to kill directly
+monitor off          # stop video to the external display; USB-C charging continues
+monitor on           # bring it back  ·  `monitor` alone shows the state
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
+
+`monitor` uses a private CoreGraphics call (`CGSConfigureDisplayEnabled`), the
+same kind of switch display utilities use, so a future macOS may break it. It
+refuses `off` while the built-in display is inactive (lid closed), so the Mac is
+never left without a screen; unplugging and replugging the cable also restores
+the display. The wrapper compiles `lib/monitor.swift` on first run and whenever
+the source changes (binary cached in `~/.cache/terminal-tools/`).
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops
