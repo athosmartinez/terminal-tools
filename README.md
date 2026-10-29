@@ -4,18 +4,20 @@
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL2-lightgrey.svg)
 ![Shell](https://img.shields.io/badge/shell-zsh-4EAA25.svg?logo=zsh&logoColor=white)
 ![Built with fzf](https://img.shields.io/badge/built%20with-fzf-1E90FF.svg)
+![Swift](https://img.shields.io/badge/monitor-Swift-F05138.svg?logo=swift&logoColor=white)
 
 Three keyboard-driven terminal TUIs built on
 [fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
 follower (`logs`), and a TCP-port process killer (`ports`) — plus `monitor`, a
-small macOS command that blanks the external display while USB-C keeps charging.
+small macOS command and menu bar app that blanks the external display while
+USB-C keeps charging.
 
 | Tool | What it does |
 |------|--------------|
 | **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload — Deployments, StatefulSets, DaemonSets and standalone Jobs — across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
-| **`monitor`** | macOS only, no TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. |
+| **`monitor`** | macOS only, no TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to

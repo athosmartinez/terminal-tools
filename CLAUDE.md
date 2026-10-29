@@ -1,7 +1,8 @@
 # CLAUDE.md — working notes for this repo
 
 Guidance for AI-assisted work on **terminal-tools** (`kube`, `logs`, `ports` —
-three zsh + fzf terminal TUIs). Conventions and gotchas live here; user-facing
+three zsh + fzf terminal TUIs — plus `monitor`, a macOS Swift CLI and menu bar
+app). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
