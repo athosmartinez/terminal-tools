@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+INTERNAL='^(eDP|LVDS|DSI)'
+PLUGIN_ID=terminal-tools.monitor
+PLUGIN_SRC=$(dirname "$(readlink -f "$0")")/lib/monitor/omarchy
+PLUGIN_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID
+
+usage() {
+  cat <<'EOF'
+monitor — turn the external display off/on (Linux, Hyprland)
+
+  monitor off         remove the external display from the layout
+  monitor on          bring it back (hyprctl reload re-applies your monitor rules)
+  monitor pause [s]   turn the external display off for s seconds (default 15), then back on
+  monitor status      print on, off or absent (default)
+  monitor bar         install the Omarchy bar widget
+
+'off' refuses when no built-in display stays active (lid closed?).
+'pause' also works with the lid closed, leaving no screen until it ends.
+EOF
+}
+
+fail() {
+  echo "monitor: $*" >&2
+  exit 1
+}
+
+run() {
+  echo "\$ $*" >&2
+  "$@"
+}
+
+monitors() { hyprctl monitors all -j; }
+
+names() {
+  jq -r ".[] | select($2) | .name" <<<"$1"
+}
+
+external() { echo "(.name | test(\"$INTERNAL\") | not) and ($1)"; }
+
+dpms() {
+  run hyprctl dispatch "hl.dsp.dpms({ action = \"$1\", monitor = \"$2\" })"
+}
+
+state() {
+  jq -r --arg re "$INTERNAL" '
+    [.[] | select(.name | test($re) | not)] as $ext
+    | if ($ext | length) == 0 then "absent"
+      elif any($ext[]; .disabled == false and .dpmsStatus == true) then "on"
+      else "off" end' <<<"$(monitors)"
+}
+
+turn_off() {
+  local json active builtin
+  json=$(monitors)
+  mapfile -t active < <(names "$json" "$(external '.disabled == false')")
+  ((${#active[@]})) || fail "no active external display"
+  mapfile -t builtin < <(names "$json" "(.name | test(\"$INTERNAL\")) and .disabled == false")
+  ((${#builtin[@]})) || fail "built-in display is inactive (lid closed?) — refusing to leave no screen"
+  disable "${active[@]}"
+}
+
+disable() {
+  for name; do
+    run hyprctl eval "hl.monitor({ output = \"$name\", disabled = true })"
+  done
+}
+
+turn_on() {
+  local json disabled asleep
+  json=$(monitors)
+  mapfile -t disabled < <(names "$json" "$(external '.disabled == true')")
+  mapfile -t asleep < <(names "$json" "$(external '.disabled == false and .dpmsStatus == false')")
+  ((${#disabled[@]} + ${#asleep[@]})) || fail "no external display is off"
+  if ((${#disabled[@]})); then
+    run hyprctl reload
+  fi
+  for name in "${asleep[@]}"; do
+    dpms enable "$name"
+  done
+}
+
+pause() {
+  local seconds=${1:-15} active
+  [[ $seconds =~ ^[0-9]+$ ]] || fail "pause: seconds must be a whole number"
+  mapfile -t active < <(names "$(monitors)" "$(external '.disabled == false')")
+  ((${#active[@]})) || fail "no active external display"
+  disable "${active[@]}"
+  sleep "$seconds"
+  run hyprctl reload
+}
+
+install_bar() {
+  run mkdir -p "$PLUGIN_DIR"
+  run cp "$PLUGIN_SRC"/* "$PLUGIN_DIR"/
+  run omarchy plugin validate "$PLUGIN_DIR"
+  run omarchy-shell shell rescanPlugins
+  run omarchy plugin enable "$PLUGIN_ID" --section right
+}
+
+case ${1:-status} in
+  status) state ;;
+  off) turn_off ;;
+  on) turn_on ;;
+  pause) pause "${2:-}" ;;
+  bar) install_bar ;;
+  -h | --help) usage ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac

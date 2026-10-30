@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "terminal-tools.monitor",
+  "name": "Monitor",
+  "version": "1.0.0",
+  "author": "athosmartinez",
+  "license": "MIT",
+  "description": "Turn the external display off, blank it for 15 seconds, or turn it back on.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Monitor",
+    "description": "Turn the external display off, blank it for 15 seconds, or turn it back on.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

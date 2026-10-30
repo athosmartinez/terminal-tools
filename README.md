@@ -9,15 +9,16 @@
 Three keyboard-driven terminal TUIs built on
 [fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
 follower (`logs`), and a TCP-port process killer (`ports`) — plus `monitor`, a
-small macOS command and menu bar app that blanks the external display while
-USB-C keeps charging.
+small command that turns the external display off without unplugging it: a
+macOS CLI and menu bar app (USB-C keeps charging), and a Linux CLI and Omarchy
+bar widget for Hyprland.
 
 | Tool | What it does |
 |------|--------------|
 | **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload — Deployments, StatefulSets, DaemonSets and standalone Jobs — across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
-| **`monitor`** | macOS only, no TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). |
+| **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -65,7 +66,8 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
   configured context (uses the **current** context; metrics need
   `metrics-server`)
 - `ports`: `lsof` (ships with macOS; `apt install lsof` on Debian/Ubuntu)
-- `monitor`: macOS with `swiftc` (Xcode Command Line Tools: `xcode-select --install`)
+- `monitor`: macOS with `swiftc` (Xcode Command Line Tools: `xcode-select --install`),
+  or Linux with Hyprland, `bash` and `jq` (the bar widget needs Omarchy)
 - Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
   `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
   `xdg-open`, `wslview` or `explorer.exe`). Without them the action still tells
@@ -96,6 +98,8 @@ ports <port|name>    # filter; `ports kill <q>` to kill directly
 monitor off          # stop video to the external display; USB-C charging continues
 monitor on           # bring it back  ·  `monitor` alone shows the state
 monitor app          # build + open MonitorBar, the menu bar toggle
+monitor pause [s]    # Linux: off for s seconds (default 15), then back on
+monitor bar          # Linux: install the Omarchy bar widget
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
 
@@ -111,6 +115,17 @@ bar icon (`display` when on, `tv.slash` when off) with a one-click toggle and a
 "Launch at Login" switch, enabled on first launch. It is an agent app — no Dock
 icon, no Cmd-Tab entry — and event-driven (no polling), so it idles at ~0% CPU
 and ~20 MB. Run `monitor app` again after changing the Swift sources.
+
+On Linux, `install.sh` links `monitor` to `monitor-linux`, a bash script for
+Hyprland. `off` disables every external output
+(`hyprctl eval 'hl.monitor({ output = …, disabled = true })'`), so the windows
+move to the built-in display, and refuses when no built-in display stays
+active. `on` runs `hyprctl reload`, which re-applies your monitor rules (mode,
+position). `pause` disables the outputs, waits, and reloads; it also runs with
+the lid closed. `monitor bar` copies `lib/monitor/omarchy/` into
+`~/.config/omarchy/plugins/terminal-tools.monitor/` and enables it: a bar icon
+that opens a menu with *Turn off* / *Turn off for 15 s*, or *Turn on*. Run it
+again after changing the widget.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

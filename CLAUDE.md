@@ -2,7 +2,7 @@
 
 Guidance for AI-assisted work on **terminal-tools** (`kube`, `logs`, `ports` —
 three zsh + fzf terminal TUIs — plus `monitor`, a macOS Swift CLI and menu bar
-app). Conventions and gotchas live here; user-facing
+app, with a separate Linux/Hyprland version in bash). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
@@ -38,6 +38,24 @@ docs live in `README.md`.
   because a disabled display leaves the active list. No confirm on purpose: it
   is instantly reversible, and `off` refuses when the built-in panel is
   inactive. Testing `off` blanks the owner's monitor — let the owner run it.
+- `monitor-linux` — the Linux (Hyprland) `monitor`, plain bash + `jq`; shares
+  no code with the macOS one. `install.sh` links `~/.local/bin/monitor` to it on
+  Linux. Hyprland here uses the Lua config, so `hyprctl keyword` is rejected:
+  `off` runs `hyprctl eval 'hl.monitor({ output = …, disabled = true })'` on
+  every external output (name not `eDP|LVDS|DSI`) and refuses when no
+  built-in output stays enabled; `on` runs `hyprctl reload` so the user's
+  monitor rules (mode/position in `~/.config/hypr/monitors.lua`) come back —
+  an enable with `mode = "preferred"` would lose them; it only uses DPMS
+  enable for an output that is enabled but asleep. `pause [s]` = disable,
+  sleep, reload, and is allowed with the lid closed (owner's choice). State
+  comes from `hyprctl monitors all -j` (`.disabled`, `.dpmsStatus`), so there
+  is no state file. `monitor bar` copies `lib/monitor/omarchy/` (manifest +
+  `BarWidget.qml`) into `~/.config/omarchy/plugins/terminal-tools.monitor/`
+  (a copy: Omarchy rejects symlinked plugins), then validate → `omarchy-shell
+  shell rescanPlugins` → `omarchy plugin enable`. The widget is NOT live —
+  rerun `monitor bar` after editing it. It polls `monitor status` every 5 s
+  and on Hyprland monitor events, runs actions detached via
+  `Quickshell.execDetached`, and turns a failure into `notify-send`.
 
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each
@@ -110,6 +128,11 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 ## Testing
 
 - Syntax: `zsh -n kube logs ports lib/*.zsh` (run per file).
+- `monitor-linux`: `bash tests/monitor-linux.test.sh` — a fake `hyprctl` on
+  `PATH` serves fixture JSON and logs the calls, so no test touches a display.
+  `omarchy plugin validate ~/.config/omarchy/plugins/terminal-tools.monitor`
+  checks the widget manifest; QML errors only show in `quickshell log -p
+  /usr/share/omarchy/shell`.
 - Dispatch/logic: call child dispatches directly with a seeded state dir, e.g.
   `ST=$(mktemp -d); print overview>$ST/view; KUBE_STATE=$ST ./kube --nav next`.
 - Mutations: `KUBETUI_DRYRUN=1 ./kube --act ctrl-r wl <ns> deploy <name>` and
@@ -132,11 +155,14 @@ monitor                    entry point (zsh wrapper, macOS) → lib/monitor/
 lib/monitor/DisplayToggle.swift  display off/on core (private CoreGraphics call)
 lib/monitor/cli/main.swift       `monitor on|off|status`
 lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
-install.sh                 symlinks the 4 entry points into ~/.local/bin
+monitor-linux              Linux `monitor` (bash, Hyprland)
+lib/monitor/omarchy/       Omarchy bar widget (`monitor bar`)
+tests/monitor-linux.test.sh
+install.sh                 symlinks the 4 entry points into ~/.local/bin (bash)
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
-`lsof` (ports), `swiftc` (monitor).
+`lsof` (ports), `swiftc` (monitor, macOS), `jq` + `hyprctl` (monitor, Linux).
 
 ## Platform (macOS / Linux / WSL2)
 
