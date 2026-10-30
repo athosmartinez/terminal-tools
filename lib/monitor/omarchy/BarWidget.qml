@@ -39,7 +39,7 @@ BarWidget {
 
   Process {
     id: statusProc
-    command: ["monitor", "status"]
+    command: ["sh", "-c", "monitor auto >/dev/null 2>&1; monitor status"]
     stdout: StdioCollector {
       onStreamFinished: root.displayState = text.trim() || "absent"
     }

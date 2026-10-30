@@ -101,6 +101,7 @@ monitor hdmi         # switch the monitor to HDMI over DDC, then turn off
 monitor input <n>    # send a raw DDC input value (find your monitor's numbers)
 monitor app          # build + open MonitorBar, the menu bar toggle
 monitor pause [s]    # Linux: off for s seconds (default 15), then back on
+monitor auto         # Linux: lid closed + display disabled → turn it back on
 monitor bar          # Linux: install the Omarchy bar widget
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
@@ -136,13 +137,15 @@ one), so switching *back* to the Mac stays a manual step on those.
 On Linux, `install.sh` links `monitor` to `monitor-linux`, a bash script for
 Hyprland. `off` disables every external output
 (`hyprctl eval 'hl.monitor({ output = …, disabled = true })'`), so the windows
-move to the built-in display, and refuses when no built-in display stays
-active. `on` runs `hyprctl reload`, which re-applies your monitor rules (mode,
+move to the built-in display, and refuses when the lid is closed or no
+built-in display stays active. `on` runs `hyprctl reload`, which re-applies your monitor rules (mode,
 position). `pause` disables the outputs, waits, and reloads; it also runs with
 the lid closed. `monitor bar` copies `lib/monitor/omarchy/` into
 `~/.config/omarchy/plugins/terminal-tools.monitor/` and enables it: a bar icon
 that opens a menu with *Turn off* / *Turn off for 15 s*, or *Turn on*. Run it
-again after changing the widget.
+again after changing the widget. The widget also runs `monitor auto` on every
+refresh: when the lid is closed, a disabled external display comes back on by
+itself (a running pause is left alone).
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

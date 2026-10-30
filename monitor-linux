@@ -5,6 +5,8 @@ INTERNAL='^(eDP|LVDS|DSI)'
 PLUGIN_ID=terminal-tools.monitor
 PLUGIN_SRC=$(dirname "$(readlink -f "$0")")/lib/monitor/omarchy
 PLUGIN_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID
+LID_DIR=${MONITOR_LID_DIR:-/proc/acpi/button/lid}
+PAUSE_MARK=${XDG_RUNTIME_DIR:-/tmp}/terminal-tools-monitor.pause
 
 usage() {
   cat <<'EOF'
@@ -14,10 +16,12 @@ monitor — turn the external display off/on (Linux, Hyprland)
   monitor on          bring it back (hyprctl reload re-applies your monitor rules)
   monitor pause [s]   turn the external display off for s seconds (default 15), then back on
   monitor status      print on, off or absent (default)
+  monitor auto        turn a disabled external display back on when the lid is closed
   monitor bar         install the Omarchy bar widget
 
-'off' refuses when no built-in display stays active (lid closed?).
-'pause' also works with the lid closed, leaving no screen until it ends.
+'off' refuses when the lid is closed or no built-in display stays active.
+'pause' also works with the lid closed, leaving no screen until it ends;
+'auto' leaves a running pause alone.
 EOF
 }
 
@@ -39,6 +43,10 @@ names() {
 
 external() { echo "(.name | test(\"$INTERNAL\") | not) and ($1)"; }
 
+lid_closed() { grep -qs closed "$LID_DIR"/*/state; }
+
+pausing() { [[ -s $PAUSE_MARK ]] && kill -0 "$(<"$PAUSE_MARK")" 2>/dev/null; }
+
 dpms() {
   run hyprctl dispatch "hl.dsp.dpms({ action = \"$1\", monitor = \"$2\" })"
 }
@@ -57,7 +65,9 @@ turn_off() {
   mapfile -t active < <(names "$json" "$(external '.disabled == false')")
   ((${#active[@]})) || fail "no active external display"
   mapfile -t builtin < <(names "$json" "(.name | test(\"$INTERNAL\")) and .disabled == false")
-  ((${#builtin[@]})) || fail "built-in display is inactive (lid closed?) — refusing to leave no screen"
+  if ((${#builtin[@]} == 0)) || lid_closed; then
+    fail "lid is closed or the built-in display is inactive — refusing to leave no screen"
+  fi
   disable "${active[@]}"
 }
 
@@ -86,9 +96,22 @@ pause() {
   [[ $seconds =~ ^[0-9]+$ ]] || fail "pause: seconds must be a whole number"
   mapfile -t active < <(names "$(monitors)" "$(external '.disabled == false')")
   ((${#active[@]})) || fail "no active external display"
+  echo $$ >"$PAUSE_MARK"
+  trap 'rm -f "$PAUSE_MARK"' EXIT
   disable "${active[@]}"
   sleep "$seconds"
   run hyprctl reload
+}
+
+auto_on() {
+  local disabled
+  if pausing || ! lid_closed; then
+    return 0
+  fi
+  mapfile -t disabled < <(names "$(monitors)" "$(external '.disabled == true')")
+  if ((${#disabled[@]})); then
+    run hyprctl reload
+  fi
 }
 
 install_bar() {
@@ -104,6 +127,7 @@ case ${1:-status} in
   off) turn_off ;;
   on) turn_on ;;
   pause) pause "${2:-}" ;;
+  auto) auto_on ;;
   bar) install_bar ;;
   -h | --help) usage ;;
   *)

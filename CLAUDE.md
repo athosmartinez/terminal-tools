@@ -50,12 +50,18 @@ docs live in `README.md`.
   no code with the macOS one. `install.sh` links `~/.local/bin/monitor` to it on
   Linux. Hyprland here uses the Lua config, so `hyprctl keyword` is rejected:
   `off` runs `hyprctl eval 'hl.monitor({ output = …, disabled = true })'` on
-  every external output (name not `eDP|LVDS|DSI`) and refuses when no
-  built-in output stays enabled; `on` runs `hyprctl reload` so the user's
+  every external output (name not `eDP|LVDS|DSI`) and refuses when the lid is
+  closed (`/proc/acpi/button/lid/*/state`; the built-in output can stay
+  enabled in Hyprland with the lid closed) or no built-in output stays enabled; `on` runs `hyprctl reload` so the user's
   monitor rules (mode/position in `~/.config/hypr/monitors.lua`) come back —
   an enable with `mode = "preferred"` would lose them; it only uses DPMS
   enable for an output that is enabled but asleep. `pause [s]` = disable,
-  sleep, reload, and is allowed with the lid closed (owner's choice). State
+  sleep, reload, and is allowed with the lid closed (owner's choice); it
+  writes its PID to `$XDG_RUNTIME_DIR/terminal-tools-monitor.pause` while it
+  runs. `auto` reloads when the lid is closed and an external output is
+  disabled, unless that PID is alive; it never touches a DPMS-asleep output
+  (idle/screensaver). Omarchy has no lid or monitor hook, so the bar widget
+  runs `monitor auto` before every `monitor status`. State
   comes from `hyprctl monitors all -j` (`.disabled`, `.dpmsStatus`), so there
   is no state file. `monitor bar` copies `lib/monitor/omarchy/` (manifest +
   `BarWidget.qml`) into `~/.config/omarchy/plugins/terminal-tools.monitor/`
@@ -137,7 +143,9 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 
 - Syntax: `zsh -n kube logs ports lib/*.zsh` (run per file).
 - `monitor-linux`: `bash tests/monitor-linux.test.sh` — a fake `hyprctl` on
-  `PATH` serves fixture JSON and logs the calls, so no test touches a display.
+  `PATH` serves fixture JSON and logs the calls, so no test touches a display;
+  `MONITOR_LID_DIR` points at a fake lid (open by default) — never let a test
+  read the real one.
   `omarchy plugin validate ~/.config/omarchy/plugins/terminal-tools.monitor`
   checks the widget manifest; QML errors only show in `quickshell log -p
   /usr/share/omarchy/shell`.

@@ -17,16 +17,24 @@ chmod +x "$WORK/bin/hyprctl"
 export PATH=$WORK/bin:$PATH
 export HYPRCTL_LOG=$WORK/calls
 export HYPRCTL_FIXTURE=$WORK/monitors.json
+export MONITOR_LID_DIR=$WORK/lid
+export XDG_RUNTIME_DIR=$WORK
+PAUSE_MARK=$WORK/terminal-tools-monitor.pause
+mkdir -p "$WORK/lid/LID"
 
 passed=0
 failed=0
 
 mon() { printf '{"name":"%s","disabled":%s,"dpmsStatus":%s}' "$1" "$2" "$3"; }
 
+lid() { echo "state:      $1" >"$WORK/lid/LID/state"; }
+
 given() {
   local IFS=,
   echo "[$*]" >"$HYPRCTL_FIXTURE"
   : >"$HYPRCTL_LOG"
+  lid open
+  rm -f "$PAUSE_MARK"
 }
 
 monitor() {
@@ -108,6 +116,47 @@ check "pause rejects a non-numeric duration" '[[ $CODE != 0 && -z $CALLS ]]'
 given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 true true)"
 monitor pause 0
 check "pause fails when the external display is already off" '[[ $CODE != 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)"
+lid closed
+monitor off
+check "off refuses when the lid is closed even with the built-in display enabled" '[[ $CODE != 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)"
+monitor pause 0
+check "pause removes its marker when it ends" '[[ $CODE == 0 && ! -e $PAUSE_MARK ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)"
+lid closed
+monitor auto
+check "auto turns a disabled external display on when the lid is closed" '[[ $CODE == 0 && $CALLS == reload ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 true true)"
+monitor auto
+check "auto does nothing when the lid is open" '[[ $CODE == 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 false false)"
+lid closed
+monitor auto
+check "auto leaves an asleep display alone" '[[ $CODE == 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)"
+lid closed
+echo $$ >"$PAUSE_MARK"
+monitor auto
+check "auto leaves a running pause alone" '[[ $CODE == 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)"
+lid closed
+echo 999999 >"$PAUSE_MARK"
+monitor auto
+check "auto ignores a marker left by a dead pause" '[[ $CODE == 0 && $CALLS == reload ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)"
+rm -rf "$WORK/lid/LID"
+monitor auto
+mkdir -p "$WORK/lid/LID"
+check "auto treats a machine without a lid as open" '[[ $CODE == 0 && -z $CALLS ]]'
 
 given "$(mon eDP-1 false true)"
 monitor bogus
