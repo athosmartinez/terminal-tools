@@ -32,6 +32,37 @@ enum DisplayToggle {
     }
 
     static func turnOff() throws {
+        let externals = try externalsSafeToDisable()
+        saveDisabled(externals)
+        for id in externals { try setEnabled(id, false) }
+    }
+
+    // Disabling the picture does not drop the link, so the monitor's own
+    // auto source switch never fires; asking for the HDMI input over DDC
+    // does the handoff explicitly. Safety is checked before the DDC write so
+    // a closed lid never ends with the only visible screen on another device.
+    static func switchToHDMIAndTurnOff() throws {
+        let externals = try externalsSafeToDisable()
+        try DDC.setInput(hdmiInput())
+        saveDisabled(externals)
+        for id in externals { try setEnabled(id, false) }
+    }
+
+    // `hdmi_input=<n>` in monitor.conf; DDC input values are vendor-specific
+    // (MCCS HDMI-1 = 17, which is the default; Samsung uses 5).
+    static func hdmiInput() -> UInt16 {
+        let text = (try? String(contentsOf: configFile, encoding: .utf8)) ?? ""
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, parts[0] == "hdmi_input", let value = UInt16(parts[1]) { return value }
+        }
+        return 17
+    }
+
+    private static let configFile = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/terminal-tools/monitor.conf")
+
+    private static func externalsSafeToDisable() throws -> [CGDirectDisplayID] {
         let active = try displays(online: false)
         // With the lid closed the built-in panel is inactive; disabling the
         // external one too would leave the Mac with no screen at all.
@@ -40,8 +71,7 @@ enum DisplayToggle {
         }
         let externals = active.filter { !isBuiltin($0) }
         guard !externals.isEmpty else { throw DisplayToggleError(description: "no active external display") }
-        saveDisabled(externals)
-        for id in externals { try setEnabled(id, false) }
+        return externals
     }
 
     static func turnOn() throws {

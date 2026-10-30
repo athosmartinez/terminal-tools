@@ -12,6 +12,15 @@ do {
     case "off":
         try DisplayToggle.turnOff()
         print("external display off — USB-C charging continues; run 'monitor on' to restore")
+    case "hdmi":
+        try DisplayToggle.switchToHDMIAndTurnOff()
+        print("monitor switched to HDMI (input \(DisplayToggle.hdmiInput())), external display off")
+    case "input":
+        guard let raw = CommandLine.arguments.dropFirst(2).first, let value = UInt16(raw) else {
+            fail("usage: monitor input <n>")
+        }
+        try DDC.setInput(value)
+        print("sent DDC input \(value)")
     case "on":
         try DisplayToggle.turnOn()
         print("external display on")
@@ -22,7 +31,7 @@ do {
         case .absent: print("external display: not connected")
         }
     default:
-        fail("usage: monitor [on|off|status|app]")
+        fail("usage: monitor [on|off|hdmi|input <n>|status|app]")
     }
 } catch {
     fail("\(error)")

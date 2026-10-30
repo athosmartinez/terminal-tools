@@ -97,6 +97,8 @@ ports                # pick a listening process to kill
 ports <port|name>    # filter; `ports kill <q>` to kill directly
 monitor off          # stop video to the external display; USB-C charging continues
 monitor on           # bring it back  ·  `monitor` alone shows the state
+monitor hdmi         # switch the monitor to HDMI over DDC, then turn off
+monitor input <n>    # send a raw DDC input value (find your monitor's numbers)
 monitor app          # build + open MonitorBar, the menu bar toggle
 monitor pause [s]    # Linux: off for s seconds (default 15), then back on
 monitor bar          # Linux: install the Omarchy bar widget
@@ -115,6 +117,21 @@ bar icon (`display` when on, `tv.slash` when off) with a one-click toggle and a
 "Launch at Login" switch, enabled on first launch. It is an agent app — no Dock
 icon, no Cmd-Tab entry — and event-driven (no polling), so it idles at ~0% CPU
 and ~20 MB. Run `monitor app` again after changing the Swift sources.
+
+**Handing the monitor to another device (macOS).** Turning the picture off does not drop
+the link, so a monitor's auto source switch never notices the Mac left or came
+back. `monitor hdmi` (and the menu item *Turn Off & Switch to HDMI*) asks for the
+HDMI input explicitly over DDC/CI first. Input numbers are vendor-specific — MCCS
+says HDMI-1 = 17, Samsung uses 5 — so set yours in
+`~/.config/terminal-tools/monitor.conf`:
+
+```ini
+hdmi_input=5
+```
+
+Find the number with `monitor input <n>` while watching the screen. Some
+monitors expose no DDC value for their USB-C input (the Samsung S27A600U is
+one), so switching *back* to the Mac stays a manual step on those.
 
 On Linux, `install.sh` links `monitor` to `monitor-linux`, a bash script for
 Hyprland. `off` disables every external output

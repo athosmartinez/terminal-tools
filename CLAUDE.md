@@ -38,6 +38,14 @@ docs live in `README.md`.
   because a disabled display leaves the active list. No confirm on purpose: it
   is instantly reversible, and `off` refuses when the built-in panel is
   inactive. Testing `off` blanks the owner's monitor — let the owner run it.
+  `monitor hdmi` / *Turn Off & Switch to HDMI* writes VCP 0x60 over DDC
+  (`DDC.swift`, the m1ddc technique) before disabling, because disabling does
+  not drop the link and the monitor's auto source switch never fires. The value
+  comes from `hdmi_input=` in `~/.config/terminal-tools/monitor.conf` (default
+  17; the owner's Samsung S27A600U uses 5, and has no DDC value for USB-C, so
+  switching back is manual). Every `lib/monitor/*.swift` is core; the wrapper
+  compiles all of them with the CLI or app `main.swift`. DDC reads from this
+  monitor are unreliable — verify writes by looking at the screen.
 - `monitor-linux` — the Linux (Hyprland) `monitor`, plain bash + `jq`; shares
   no code with the macOS one. `install.sh` links `~/.local/bin/monitor` to it on
   Linux. Hyprland here uses the Lua config, so `hyprctl keyword` is rejected:
@@ -153,6 +161,7 @@ lib/kube-actions.zsh       kube action registry + menu + run_action
 lib/kube-data.zsh          kube per-view feeds + metrics join
 monitor                    entry point (zsh wrapper, macOS) → lib/monitor/
 lib/monitor/DisplayToggle.swift  display off/on core (private CoreGraphics call)
+lib/monitor/DDC.swift            input switch over DDC/CI (private IOAVService)
 lib/monitor/cli/main.swift       `monitor on|off|status`
 lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
 monitor-linux              Linux `monitor` (bash, Hyprland)

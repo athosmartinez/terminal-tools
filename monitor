@@ -16,9 +16,14 @@ monitor — turn the external display off/on without unplugging it (macOS)
 
   monitor off       stop sending video to the external display (charging continues)
   monitor on        bring it back
+  monitor hdmi      switch the monitor to its HDMI input over DDC, then turn off
+  monitor input <n> send a raw DDC input value (to find your monitor's numbers)
   monitor status    show whether it is on (default)
   monitor app       build and open MonitorBar, a menu bar toggle
                     (~/Applications/MonitorBar.app; no Dock icon, starts at login)
+
+The HDMI value is vendor-specific: set it in ~/.config/terminal-tools/monitor.conf
+as hdmi_input=<n> (default 17, the MCCS value; Samsung monitors use 5).
 
 Refuses 'off' while the built-in display is inactive (lid closed), so the Mac
 is never left without a screen. Unplugging and replugging the cable also
@@ -42,7 +47,7 @@ else
 fi
 
 SRC=${0:A:h}/lib/monitor
-CORE=$SRC/DisplayToggle.swift
+CORE=( $SRC/*.swift )   # shared by the CLI and the app
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-tools
 
 # Swift 5 language mode: the app's C display callback and AppKit delegate
@@ -58,7 +63,7 @@ build() {  # build <output> <sources...>
 if [[ $1 == app ]]; then
   APP=$HOME/Applications/MonitorBar.app
   BIN=$APP/Contents/MacOS/MonitorBar
-  build "$BIN" "$CORE" "$SRC/app/main.swift" || exit 1
+  build "$BIN" $CORE "$SRC/app/main.swift" || exit 1
   cat > $APP/Contents/Info.plist <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -87,8 +92,11 @@ EOF
 fi
 
 BIN=$CACHE/monitor
-if [[ ! -x $BIN || $CORE -nt $BIN || $SRC/cli/main.swift -nt $BIN ]]; then
-  build "$BIN" "$CORE" "$SRC/cli/main.swift" || exit 1
+stale=0
+[[ -x $BIN ]] || stale=1
+for f in $CORE $SRC/cli/main.swift; do [[ $f -nt $BIN ]] && stale=1; done
+if (( stale )); then
+  build "$BIN" $CORE "$SRC/cli/main.swift" || exit 1
 fi
 
 exec "$BIN" "$@"

@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let title = state == .on ? "Turn Off Display" : "Turn On Display"
             menu.addItem(withTitle: title, action: #selector(toggleDisplay), keyEquivalent: "").target = self
         }
+        if state == .on {
+            menu.addItem(withTitle: "Turn Off & Switch to HDMI", action: #selector(switchToHDMI), keyEquivalent: "").target = self
+        }
 
         menu.addItem(.separator())
         let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
@@ -64,6 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             showError(error)
         }
+        refreshIcon()
+    }
+
+    @objc private func switchToHDMI() {
+        do { try DisplayToggle.switchToHDMIAndTurnOff() } catch { showError(error) }
         refreshIcon()
     }
 
