@@ -17,9 +17,11 @@ BarWidget {
         { icon: "󰶐", label: "Turn off", args: ["off"] },
         { icon: "󱎫", label: "Turn off for 15 s", args: ["pause", "15"] }
       ]
-    : [
+    : displayState === "off"
+    ? [
         { icon: "󰍹", label: "Turn on", args: ["on"] }
       ]
+    : []
 
   function close() { popupOpen = false }
 
@@ -33,8 +35,7 @@ BarWidget {
     refreshSoon.restart()
   }
 
-  visible: displayState !== "absent"
-  implicitWidth: visible ? button.implicitWidth : 0
+  implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   Process {
