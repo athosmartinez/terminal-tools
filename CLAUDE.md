@@ -19,6 +19,27 @@ docs live in `README.md`.
 - All script text (messages, help, comments) is **English**. Conversation with
   the owner is Portuguese.
 
+## Scope: what belongs here
+
+This repo is **public**. The owner's machine configs live in a private
+`dotfiles` repo. A file belongs here only when it is useful to
+other people and holds nothing private:
+
+- **Here:** a generic tool (command, TUI, menu bar app, bar widget) with docs.
+- **Not here:** emails, hostnames, IPs, tokens, employer or client names,
+  absolute home paths, the owner's keybindings or theme, or a script that only
+  makes sense with the owner's hardware or services. Those stay in `dotfiles`.
+- **A tool that needs a machine value** reads it from
+  `~/.config/terminal-tools/<tool>.conf` (or an env var) with a sane default —
+  see `hdmi_input=` in `monitor.conf`. The value never goes in the repo.
+- **Moving a script from `dotfiles` to here:** strip the machine values first,
+  add a usage text, a test when it has logic, a README entry and a line in
+  `install.sh`; then delete it from `dotfiles` so there is one owner.
+- **Generated copies:** `monitor bar` copies `lib/monitor/omarchy/` into
+  `~/.config/omarchy/plugins/terminal-tools.monitor/`, and `dotfiles` syncs
+  that folder. This repo owns the files: edit them here and rerun
+  `monitor bar`, never edit the copy in `dotfiles`.
+
 ## What each tool is
 
 - `kube` — a keyboard-first Kubernetes cockpit (single persistent fzf).
@@ -210,7 +231,8 @@ install.sh                 symlinks the 5 entry points into ~/.local/bin (bash)
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
-`lsof` (ports), `swiftc` (monitor, macOS), `jq` + `hyprctl` (monitor, Linux).
+`lsof` (ports), `swiftc` (monitor and vox, macOS), `jq` + `hyprctl` (monitor,
+Linux), Voxtype (vox).
 
 ## Platform (macOS / Linux / WSL2)
 

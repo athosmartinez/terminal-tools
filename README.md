@@ -6,14 +6,19 @@
 ![Built with fzf](https://img.shields.io/badge/built%20with-fzf-1E90FF.svg)
 ![Swift](https://img.shields.io/badge/monitor-Swift-F05138.svg?logo=swift&logoColor=white)
 
-Three keyboard-driven terminal TUIs built on
-[fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
-follower (`logs`), and a TCP-port process killer (`ports`) — plus `monitor`, a
-small command that turns the external display off without unplugging it: a
-macOS CLI and menu bar app (USB-C keeps charging), and a Linux CLI and Omarchy
-bar widget for Hyprland — and `vox`, a [Voxtype](https://github.com/peteonrails/voxtype) companion
-that shows the daemon state and keeps the last transcriptions so you can copy
-one again.
+Small terminal tools for macOS and Linux. Three are keyboard-driven TUIs built
+on [fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
+follower (`logs`), and a TCP-port process killer (`ports`). Two are plain
+commands with a menu bar app: `monitor` turns the external display off without
+unplugging it (USB-C keeps charging), on macOS and on Linux with Hyprland, and
+`vox` is a [Voxtype](https://github.com/peteonrails/voxtype) companion that
+shows the daemon state and keeps the last transcriptions so you can copy one
+again.
+
+Every tool is generic: nothing in this repo is tied to one machine or one
+person. A value that differs per machine (a monitor's HDMI input number, a
+path) lives in a config file under `~/.config/terminal-tools/`, outside the
+repo.
 
 | Tool | What it does |
 |------|--------------|
