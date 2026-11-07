@@ -111,7 +111,7 @@ other people and holds nothing private:
   oldest first, last `VOX_HISTORY_MAX`=15, written via tmp + `mv`. `copy` sources
   `lib/kubetui.zsh` only for `clip`; `record` sources nothing, to stay fast.
   `vox app` builds `~/Applications/VoxBar.app` from `lib/vox/app/main.swift`
-  (same bundle steps as MonitorBar, no app icon). VoxBar replaced a loose
+  (same bundle steps as MonitorBar, app icon from `lib/vox/app/AppIcon.png`). VoxBar replaced a loose
   SwiftBar plugin: the icon is the daemon state, read from `/tmp/voxtype/pid`
   (dead pid = not running) and `/tmp/voxtype/state` (`idle`/`recording`/
   `transcribing`; its mtime is the age, 90 s transcribing = stuck). A 1 s timer
@@ -226,6 +226,7 @@ monitor-linux              Linux `monitor` (bash, Hyprland)
 lib/monitor/omarchy/       Omarchy bar widget (`monitor bar`)
 vox                        Voxtype companion: post-process hook, list/copy, status (zsh)
 lib/vox/app/main.swift     VoxBar menu bar app (`vox app`)
+lib/vox/app/AppIcon.png    app icon, 1024 px; `vox app` makes the .icns
 tests/monitor-linux.test.sh
 install.sh                 symlinks the 5 entry points into ~/.local/bin (bash)
 ```
