@@ -88,6 +88,21 @@ enum DisplayToggle {
         if restored == 0, let lastError { throw lastError }
     }
 
+    // True for a short time after any off or on, from the app or the CLI: both
+    // write the state file. An HDMI handoff can bounce the link, and that
+    // bounce looks exactly like a cable being plugged in.
+    static func changedRecently(within seconds: TimeInterval) -> Bool {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: stateFile.path)
+        guard let modified = attributes?[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(modified) < seconds
+    }
+
+    static func summary() -> String {
+        let active = (try? displays(online: false)) ?? []
+        let online = (try? displays(online: true)) ?? []
+        return "active=\(active) online=\(online) remembered=\(loadDisabled())"
+    }
+
     private static func disabledCandidates(active: [CGDirectDisplayID]) throws -> Set<CGDirectDisplayID> {
         let online = try displays(online: true)
         return Set(loadDisabled() + online.filter { !isBuiltin($0) && !active.contains($0) })

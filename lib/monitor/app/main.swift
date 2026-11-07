@@ -3,11 +3,17 @@
 // Built into ~/Applications/MonitorBar.app by `monitor app`.
 
 import AppKit
+import IOKit
 import ServiceManagement
+import os
+
+private let log = Logger(subsystem: "com.athosmartinez.terminal-tools.monitorbar", category: "connect")
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
+    private var cablePort: IONotificationPortRef?
+    private var pendingRestore: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -17,11 +23,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Event-driven instead of polling: macOS calls back on every display
         // change (our own toggle, the CLI, or the cable being unplugged).
-        CGDisplayRegisterReconfigurationCallback({ _, flags, context in
+        CGDisplayRegisterReconfigurationCallback({ id, flags, context in
             guard !flags.contains(.beginConfigurationFlag), let context else { return }
             let delegate = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
-            DispatchQueue.main.async { delegate.refreshIcon() }
+            DispatchQueue.main.async { delegate.displayChanged(id, flags) }
         }, Unmanaged.passUnretained(self).toOpaque())
+
+        watchCable()
+    }
+
+    private func displayChanged(_ id: CGDirectDisplayID, _ flags: CGDisplayChangeSummaryFlags) {
+        refreshIcon()
+        log.notice("display \(id, privacy: .public) flags=\(flags.rawValue, privacy: .public) \(DisplayToggle.summary(), privacy: .public)")
+        // Only an added display counts: the enabled and disabled flags are the
+        // user's own toggle, and reacting to them would undo every Turn Off.
+        if flags.contains(.addFlag), CGDisplayIsBuiltin(id) == 0 { scheduleRestore() }
+    }
+
+    // macOS creates this service when a USB-C port enters DisplayPort mode, so
+    // a plain charger never fires it. Matches that exist already are drained
+    // without acting: a display left off stays off across a relaunch or login.
+    private func watchCable() {
+        guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
+        cablePort = port
+        IONotificationPortSetDispatchQueue(port, .main)
+        var iterator: io_iterator_t = 0
+        let result = IOServiceAddMatchingNotification(
+            port, kIOFirstMatchNotification, IOServiceMatching("IOPortTransportStateDisplayPort"),
+            { context, iterator in
+                guard let context else { return }
+                let delegate = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
+                let count = AppDelegate.drain(iterator)
+                log.notice("cable: \(count, privacy: .public) DisplayPort transport(s) appeared \(DisplayToggle.summary(), privacy: .public)")
+                delegate.scheduleRestore()
+            },
+            Unmanaged.passUnretained(self).toOpaque(), &iterator)
+        guard result == KERN_SUCCESS else {
+            log.error("cannot watch the USB-C ports (kern_return \(result, privacy: .public))")
+            return
+        }
+        log.notice("watching USB-C ports, \(AppDelegate.drain(iterator), privacy: .public) already connected")
+    }
+
+    // The iterator must be emptied, or IOKit stops sending notifications.
+    private static func drain(_ iterator: io_iterator_t) -> Int {
+        var count = 0
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            IOObjectRelease(service)
+            count += 1
+        }
+        return count
+    }
+
+    // One plug fires several events and WindowServer needs time to settle, so
+    // they collapse into a single attempt after the last one.
+    private func scheduleRestore() {
+        pendingRestore?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.restoreAfterConnect() }
+        pendingRestore = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    // Silent on purpose: nobody clicked anything, so an alert would be noise.
+    private func restoreAfterConnect() {
+        guard DisplayToggle.state() == .off, !DisplayToggle.changedRecently(within: 10) else { return }
+        do {
+            try DisplayToggle.turnOn()
+            log.notice("display restored \(DisplayToggle.summary(), privacy: .public)")
+        } catch {
+            log.error("restore failed: \(String(describing: error), privacy: .public)")
+        }
+        refreshIcon()
     }
 
     private func refreshIcon() {

@@ -34,7 +34,12 @@ docs live in `README.md`.
   `monitor app` rebuilds `~/Applications/MonitorBar.app` (Info.plist with
   `LSUIElement`, ad-hoc `codesign` required by `SMAppService`) and relaunches
   it. Both compile with `-swift-version 5`. The app refreshes its icon from
-  `CGDisplayRegisterReconfigurationCallback`, never by polling. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
+  `CGDisplayRegisterReconfigurationCallback`, never by polling. The app also
+  restores an off display when a cable connects: triggers are `.addFlag` for an
+  external display and a new `IOPortTransportStateDisplayPort` (IOKit match),
+  never `.enabledFlag`/`.disabledFlag`, which would undo the user's own off.
+  Events collapse into one silent attempt after 2 s, skipped for 10 s after the
+  state file changes, because an HDMI handoff can look like a plug. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
   because a disabled display leaves the active list. No confirm on purpose: it
   is instantly reversible, and `off` refuses when the built-in panel is
   inactive. Testing `off` blanks the owner's monitor — let the owner run it.

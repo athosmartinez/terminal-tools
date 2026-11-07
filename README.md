@@ -119,6 +119,10 @@ bar icon (`display` when on, `tv.slash` when off) with a one-click toggle and a
 icon, no Cmd-Tab entry — and event-driven (no polling), so it idles at ~0% CPU
 and ~20 MB. Run `monitor app` again after changing the Swift sources.
 
+While it runs, MonitorBar turns a display that is off back on when a USB-C cable
+with video connects. A plain charger does not trigger it, and a display left off
+stays off across a relaunch or login.
+
 **Handing the monitor to another device (macOS).** Turning the picture off does not drop
 the link, so a monitor's auto source switch never notices the Mac left or came
 back. `monitor hdmi` (and the menu item *Turn Off & Switch to HDMI*) asks for the
