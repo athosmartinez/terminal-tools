@@ -11,8 +11,8 @@ Three keyboard-driven terminal TUIs built on
 follower (`logs`), and a TCP-port process killer (`ports`) — plus `monitor`, a
 small command that turns the external display off without unplugging it: a
 macOS CLI and menu bar app (USB-C keeps charging), and a Linux CLI and Omarchy
-bar widget for Hyprland — and `voxhist`, which keeps the last
-[Voxtype](https://github.com/peteonrails/voxtype) transcriptions so you can copy
+bar widget for Hyprland — and `vox`, a [Voxtype](https://github.com/peteonrails/voxtype) companion
+that shows the daemon state and keeps the last transcriptions so you can copy
 one again.
 
 | Tool | What it does |
@@ -21,7 +21,7 @@ one again.
 | **`logs`** | Follow logs of any workload — Deployments, StatefulSets, DaemonSets and standalone Jobs — across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
 | **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
-| **`voxhist`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook. Lists and copies them in the terminal, and ships **VoxHistBar**, a menu bar list that copies an entry on click (macOS). |
+| **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -71,7 +71,7 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
 - `ports`: `lsof` (ships with macOS; `apt install lsof` on Debian/Ubuntu)
 - `monitor`: macOS with `swiftc` (Xcode Command Line Tools: `xcode-select --install`),
   or Linux with Hyprland, `bash` and `jq` (the bar widget needs Omarchy)
-- `voxhist`: [Voxtype](https://github.com/peteonrails/voxtype); `swiftc` for
+- `vox`: [Voxtype](https://github.com/peteonrails/voxtype); `swiftc` for
   the menu bar app (macOS)
 - Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
   `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
@@ -83,7 +83,7 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
 ```sh
 git clone https://github.com/athosmartinez/terminal-tools.git
 cd terminal-tools
-./install.sh            # symlinks kube, logs, ports, monitor, voxhist into ~/.local/bin
+./install.sh            # symlinks kube, logs, ports, monitor, vox into ~/.local/bin
 ```
 
 `install.sh` symlinks the five entry points into `~/.local/bin` (make sure it's
@@ -108,10 +108,11 @@ monitor app          # build + open MonitorBar, the menu bar toggle
 monitor pause [s]    # Linux: off for s seconds (default 15), then back on
 monitor auto         # Linux: lid closed + display disabled → turn it back on
 monitor bar          # Linux: install the Omarchy bar widget
-voxhist              # the last Voxtype transcriptions, newest first
-voxhist copy [n]     # copy entry n (1 = newest) to the clipboard
-voxhist hook         # print the Voxtype config that saves them
-voxhist app          # build + open VoxHistBar, the menu bar list (macOS)
+vox                  # the last Voxtype transcriptions, newest first
+vox copy [n]         # copy entry n (1 = newest) to the clipboard
+vox status           # ready / recording / transcribing / not running
+vox hook             # print the Voxtype config that saves them
+vox app              # build + open VoxBar, the Voxtype menu bar item (macOS)
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
 
@@ -161,25 +162,31 @@ refresh: when the lid is closed, a disabled external display comes back on by
 itself (a running pause is left alone).
 
 **Voxtype history.** Voxtype types each dictation and keeps no copy, so a
-dictation typed into the wrong window is lost. `voxhist record` is a Voxtype
+dictation typed into the wrong window is lost. `vox record` is a Voxtype
 post-process hook: Voxtype sends it the text on stdin and types what it prints,
 and it prints the text back unchanged after it saves it. If the hook fails,
-Voxtype types the original text. Add the lines that `voxhist hook` prints to
+Voxtype types the original text. Add the lines that `vox hook` prints to
 the Voxtype `config.toml` and restart the daemon:
 
 ```toml
 [output.post_process]
-command = "/path/to/terminal-tools/voxhist record"
+command = "/path/to/terminal-tools/vox record"
 timeout_ms = 2000
 ```
 
 The path is absolute because the daemon does not see `~/.local/bin`. The last
-15 dictations (`VOXHIST_MAX`) stay in `~/.local/share/terminal-tools/voxhist`
-with mode 600, in plain text. `voxhist app` builds **VoxHistBar** into
-`~/Applications/VoxHistBar.app`: a menu bar icon that lists them with the time,
-copies the full text on click and shows it in a tooltip. Like MonitorBar, it is
-an agent app with "Launch at Login" on by default. It reads the file when the
-menu opens, so a new dictation shows with no refresh.
+15 dictations (`VOX_HISTORY_MAX`) stay in
+`~/.local/share/terminal-tools/vox-history` with mode 600, in plain text.
+
+`vox app` builds **VoxBar** into `~/Applications/VoxBar.app`. The icon shows the
+daemon state: `mic` ready, red `mic.fill` recording, `hourglass` transcribing,
+orange triangle when a transcription takes more than 90 s (a hang), `mic.slash`
+when the daemon is not running. The menu has *Restart Voxtype* (`launchctl
+kickstart -k`), *Open Log*, and the recent dictations with the time: a click
+copies the full text, and the tooltip shows it. Like MonitorBar, it is an agent
+app with "Launch at Login" on by default. It reads the daemon's
+`/tmp/voxtype/state` and `pid` once a second, and the history when the menu
+opens.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

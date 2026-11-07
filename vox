@@ -1,32 +1,36 @@
 #!/usr/bin/env zsh
 #
-# voxhist — keep the last Voxtype transcriptions so a lost one can be copied
-# again. Voxtype itself keeps no history: its log restarts with the daemon.
+# vox — Voxtype companion: the daemon state and the last transcriptions, so a
+# lost one can be copied again. Voxtype itself keeps no history: its log
+# restarts with the daemon.
 #
-# `voxhist record` is the Voxtype post-process hook: it gets each transcription
-# on stdin, prints it back unchanged (Voxtype types what the hook prints) and
-# saves it. `voxhist app` builds VoxHistBar, a menu bar list that copies an
-# entry on click (macOS). The history file is shared by both.
+# `vox record` is the Voxtype post-process hook: it gets each transcription on
+# stdin, prints it back unchanged (Voxtype types what the hook prints) and
+# saves it. `vox app` builds VoxBar, the menu bar item: daemon state, restart,
+# log, and the history with copy on click (macOS). Both read the same file.
 #
 emulate -L zsh
 zmodload zsh/datetime
 
-HIST=${VOXHIST_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/terminal-tools/voxhist}
-MAX=${VOXHIST_MAX:-15}
+HIST=${VOX_HISTORY_FILE:-${XDG_DATA_HOME:-$HOME/.local/share}/terminal-tools/vox-history}
+MAX=${VOX_HISTORY_MAX:-15}
 RS=$'\036'   # record separator: a dictation can hold newlines and tabs, never this
+# The daemon writes these (`state_file = "auto"` in its config).
+STATE_DIR=${VOX_STATE_DIR:-/tmp/voxtype}
 
 usage() {
   cat <<'EOF'
-voxhist — the last Voxtype transcriptions, to copy one again
+vox — Voxtype state and the last transcriptions, to copy one again
 
-  voxhist             list them, newest first (default)
-  voxhist copy [n]    copy entry n to the clipboard (1 = newest, the default)
-  voxhist clear       delete the history
-  voxhist hook        print the Voxtype config that saves each transcription
-  voxhist app         build and open VoxHistBar, the menu bar list (macOS)
-  voxhist record      the hook itself: stdin -> stdout unchanged, then saved
+  vox                 list the transcriptions, newest first (default)
+  vox copy [n]        copy entry n to the clipboard (1 = newest, the default)
+  vox clear           delete the history
+  vox status          show the daemon state: ready, recording, transcribing, not running
+  vox hook            print the Voxtype config that saves each transcription
+  vox app             build and open VoxBar, the menu bar item (macOS)
+  vox record          the hook itself: stdin -> stdout unchanged, then saved
 
-Keeps the last 15 (VOXHIST_MAX) in ~/.local/share/terminal-tools/voxhist,
+Keeps the last 15 (VOX_HISTORY_MAX) in ~/.local/share/terminal-tools/vox-history,
 readable only by you. Everything you dictate lands there in plain text.
 EOF
 }
@@ -61,7 +65,7 @@ case ${1:-list} in
   list)
     load
     if (( ! ${#ENTRIES} )); then
-      print -u2 "voxhist: no transcriptions yet — see 'voxhist hook'"
+      print -u2 "vox: no transcriptions yet — see 'vox hook'"
       exit 0
     fi
     local i entry
@@ -76,7 +80,7 @@ case ${1:-list} in
     load
     local n=${2:-1}
     if [[ $n != <1-> ]] || (( n > ${#ENTRIES} )); then
-      print -u2 "voxhist: no entry $n (${#ENTRIES} saved)"
+      print -u2 "vox: no entry $n (${#ENTRIES} saved)"
       exit 1
     fi
     source ${0:A:h}/lib/kubetui.zsh   # clip: the one cross-platform clipboard helper
@@ -85,7 +89,21 @@ case ${1:-list} in
     ;;
 
   clear)
-    rm -f $HIST && print "voxhist: history cleared"
+    rm -f $HIST && print "vox: history cleared"
+    ;;
+
+  status)
+    # A dead pid means the daemon crashed or was stopped; its state file stays.
+    local pid=$(<$STATE_DIR/pid 2>/dev/null)
+    if [[ $pid != <1-> ]] || ! kill -0 $pid 2>/dev/null; then
+      print "not running"
+      exit 1
+    fi
+    local state=$(<$STATE_DIR/state 2>/dev/null)
+    case $state in
+      recording|transcribing) print $state ;;
+      *) print ready ;;
+    esac
     ;;
 
   hook)
@@ -105,16 +123,16 @@ EOF
 
   app)
     if [[ $(uname -s) != Darwin ]]; then
-      print -u2 "voxhist app: macOS only"
+      print -u2 "vox app: macOS only"
       exit 1
     fi
     if ! (( $+commands[swiftc] )); then
-      print -u2 "voxhist: swiftc not found — install the Xcode Command Line Tools: xcode-select --install"
+      print -u2 "vox: swiftc not found — install the Xcode Command Line Tools: xcode-select --install"
       exit 1
     fi
-    local src=${0:A:h}/lib/voxhist/app/main.swift
-    local app=$HOME/Applications/VoxHistBar.app
-    local bin=$app/Contents/MacOS/VoxHistBar
+    local src=${0:A:h}/lib/vox/app/main.swift
+    local app=$HOME/Applications/VoxBar.app
+    local bin=$app/Contents/MacOS/VoxBar
     mkdir -p ${bin:h}
     print -u2 "\$ swiftc -O -swift-version 5 ${src:t} -o $bin"
     swiftc -O -swift-version 5 "$src" -o "$bin" || exit 1
@@ -123,9 +141,9 @@ EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key>         <string>com.athosmartinez.terminal-tools.voxhistbar</string>
-  <key>CFBundleName</key>               <string>VoxHistBar</string>
-  <key>CFBundleExecutable</key>         <string>VoxHistBar</string>
+  <key>CFBundleIdentifier</key>         <string>com.athosmartinez.terminal-tools.voxbar</string>
+  <key>CFBundleName</key>               <string>VoxBar</string>
+  <key>CFBundleExecutable</key>         <string>VoxBar</string>
   <key>CFBundlePackageType</key>        <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>1.0</string>
   <key>CFBundleVersion</key>            <string>1</string>
@@ -137,7 +155,7 @@ EOF
     # Ad-hoc signature: required on Apple Silicon and by SMAppService.
     print -u2 "\$ codesign --force --sign - $app"
     codesign --force --sign - "$app" || exit 1
-    pkill -x VoxHistBar && sleep 0.5
+    pkill -x VoxBar && sleep 0.5
     print -u2 "\$ open $app"
     open "$app"
     ;;

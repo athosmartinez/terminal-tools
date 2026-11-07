@@ -2,8 +2,8 @@
 
 Guidance for AI-assisted work on **terminal-tools** (`kube`, `logs`, `ports` —
 three zsh + fzf terminal TUIs — plus `monitor`, a macOS Swift CLI and menu bar
-app, with a separate Linux/Hyprland version in bash, and `voxhist`, a Voxtype
-transcription history with a menu bar app). Conventions and gotchas live here; user-facing
+app, with a separate Linux/Hyprland version in bash, and `vox`, a Voxtype
+companion: transcription history plus a menu bar app with the daemon state). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
@@ -79,20 +79,25 @@ docs live in `README.md`.
   and on Hyprland monitor events, runs actions detached via
   `Quickshell.execDetached`, and turns a failure into `notify-send`.
 
-- `voxhist` — Voxtype (third-party, compiled Rust in `/Applications/Voxtype.app`,
+- `vox` — Voxtype (third-party, compiled Rust in `/Applications/Voxtype.app`,
   not in this repo) keeps no history and its log restarts with the daemon. So
-  `voxhist record` is the `[output.post_process] command` in the Voxtype
+  `vox record` is the `[output.post_process] command` in the Voxtype
   `config.toml`: stdin → stdout **unchanged** (Voxtype types what the hook
   prints; on failure it types the original), then saved. The command path is
   absolute: the daemon's launchd PATH has no `~/.local/bin`. File:
-  `~/.local/share/terminal-tools/voxhist`, mode 600, records
+  `~/.local/share/terminal-tools/vox-history`, mode 600, records
   `<epoch>\t<text>` joined by U+001E (a dictation can hold newlines and tabs),
-  oldest first, last `VOXHIST_MAX`=15, written via tmp + `mv`. `copy` sources
+  oldest first, last `VOX_HISTORY_MAX`=15, written via tmp + `mv`. `copy` sources
   `lib/kubetui.zsh` only for `clip`; `record` sources nothing, to stay fast.
-  `voxhist app` builds `~/Applications/VoxHistBar.app` from
-  `lib/voxhist/app/main.swift` (same bundle steps as MonitorBar, no app icon);
-  it re-reads the file in `menuNeedsUpdate`. Not live — rerun `voxhist app`.
-  Test with `VOXHIST_FILE` pointing at a scratch file; never at the real one.
+  `vox app` builds `~/Applications/VoxBar.app` from `lib/vox/app/main.swift`
+  (same bundle steps as MonitorBar, no app icon). VoxBar replaced a loose
+  SwiftBar plugin: the icon is the daemon state, read from `/tmp/voxtype/pid`
+  (dead pid = not running) and `/tmp/voxtype/state` (`idle`/`recording`/
+  `transcribing`; its mtime is the age, 90 s transcribing = stuck). A 1 s timer
+  in `.common` mode, on purpose: the daemon sends no event when it dies.
+  History is re-read in `menuNeedsUpdate`. Not live — rerun `vox app`.
+  Test with `VOX_HISTORY_FILE` / `VOX_STATE_DIR` at scratch paths, never the
+  real ones.
 
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each
@@ -164,7 +169,7 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 
 ## Testing
 
-- Syntax: `zsh -n kube logs ports voxhist lib/*.zsh` (run per file).
+- Syntax: `zsh -n kube logs ports vox lib/*.zsh` (run per file).
 - `monitor-linux`: `bash tests/monitor-linux.test.sh` — a fake `hyprctl` on
   `PATH` serves fixture JSON and logs the calls, so no test touches a display;
   `MONITOR_LID_DIR` points at a fake lid (open by default) — never let a test
@@ -198,8 +203,8 @@ lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
 lib/monitor/app/AppIcon.png      app icon, 1024 px; `monitor app` makes the .icns
 monitor-linux              Linux `monitor` (bash, Hyprland)
 lib/monitor/omarchy/       Omarchy bar widget (`monitor bar`)
-voxhist                    Voxtype history: post-process hook + list/copy (zsh)
-lib/voxhist/app/main.swift VoxHistBar menu bar app (`voxhist app`)
+vox                        Voxtype companion: post-process hook, list/copy, status (zsh)
+lib/vox/app/main.swift     VoxBar menu bar app (`vox app`)
 tests/monitor-linux.test.sh
 install.sh                 symlinks the 5 entry points into ~/.local/bin (bash)
 ```
