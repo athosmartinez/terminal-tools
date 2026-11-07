@@ -121,7 +121,8 @@ and ~20 MB. Run `monitor app` again after changing the Swift sources.
 
 While it runs, MonitorBar turns a display that is off back on when a USB-C cable
 with video connects. A plain charger does not trigger it, and a display left off
-stays off across a relaunch or login.
+stays off across a relaunch, login or wake. Because of that, a cable plugged in
+during sleep or in the first 15 seconds after wake does nothing: use the menu.
 
 **Handing the monitor to another device (macOS).** Turning the picture off does not drop
 the link, so a monitor's auto source switch never notices the Mac left or came

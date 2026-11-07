@@ -39,7 +39,8 @@ docs live in `README.md`.
   external display and a new `IOPortTransportStateDisplayPort` (IOKit match),
   never `.enabledFlag`/`.disabledFlag`, which would undo the user's own off.
   Events collapse into one silent attempt after 2 s, skipped for 10 s after the
-  state file changes, because an HDMI handoff can look like a plug. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
+  state file changes, because an HDMI handoff can look like a plug, and for 15 s
+  after a wake, because displays are detected again then. Disabled ids persist in `~/.config/terminal-tools/monitor-disabled`
   because a disabled display leaves the active list. No confirm on purpose: it
   is instantly reversible, and `off` refuses when the built-in panel is
   inactive. Testing `off` blanks the owner's monitor — let the owner run it.

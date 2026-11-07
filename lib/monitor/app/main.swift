@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let menu = NSMenu()
     private var cablePort: IONotificationPortRef?
     private var pendingRestore: DispatchWorkItem?
+    private var lastWake: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -30,7 +31,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }, Unmanaged.passUnretained(self).toOpaque())
 
         watchCable()
+
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            workspace.addObserver(self, selector: #selector(noteWake), name: name, object: nil)
+        }
     }
+
+    @objc private func noteWake() { lastWake = Date() }
 
     private func displayChanged(_ id: CGDirectDisplayID, _ flags: CGDisplayChangeSummaryFlags) {
         refreshIcon()
@@ -87,6 +95,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Silent on purpose: nobody clicked anything, so an alert would be noise.
     private func restoreAfterConnect() {
         guard DisplayToggle.state() == .off, !DisplayToggle.changedRecently(within: 10) else { return }
+        // Displays are detected again at wake, which looks like a plug. Without
+        // this, a display left off overnight would come back on every morning.
+        if let lastWake, Date().timeIntervalSince(lastWake) < 15 {
+            log.notice("restore skipped: the Mac just woke")
+            return
+        }
         do {
             try DisplayToggle.turnOn()
             log.notice("display restored \(DisplayToggle.summary(), privacy: .public)")
