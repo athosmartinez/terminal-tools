@@ -179,6 +179,7 @@ lib/monitor/DisplayToggle.swift  display off/on core (private CoreGraphics call)
 lib/monitor/DDC.swift            input switch over DDC/CI (private IOAVService)
 lib/monitor/cli/main.swift       `monitor on|off|status`
 lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
+lib/monitor/app/AppIcon.png      app icon, 1024 px; `monitor app` makes the .icns
 monitor-linux              Linux `monitor` (bash, Hyprland)
 lib/monitor/omarchy/       Omarchy bar widget (`monitor bar`)
 tests/monitor-linux.test.sh
