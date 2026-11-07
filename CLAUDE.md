@@ -2,7 +2,8 @@
 
 Guidance for AI-assisted work on **terminal-tools** (`kube`, `logs`, `ports` —
 three zsh + fzf terminal TUIs — plus `monitor`, a macOS Swift CLI and menu bar
-app, with a separate Linux/Hyprland version in bash). Conventions and gotchas live here; user-facing
+app, with a separate Linux/Hyprland version in bash, and `voxhist`, a Voxtype
+transcription history with a menu bar app). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
@@ -78,6 +79,21 @@ docs live in `README.md`.
   and on Hyprland monitor events, runs actions detached via
   `Quickshell.execDetached`, and turns a failure into `notify-send`.
 
+- `voxhist` — Voxtype (third-party, compiled Rust in `/Applications/Voxtype.app`,
+  not in this repo) keeps no history and its log restarts with the daemon. So
+  `voxhist record` is the `[output.post_process] command` in the Voxtype
+  `config.toml`: stdin → stdout **unchanged** (Voxtype types what the hook
+  prints; on failure it types the original), then saved. The command path is
+  absolute: the daemon's launchd PATH has no `~/.local/bin`. File:
+  `~/.local/share/terminal-tools/voxhist`, mode 600, records
+  `<epoch>\t<text>` joined by U+001E (a dictation can hold newlines and tabs),
+  oldest first, last `VOXHIST_MAX`=15, written via tmp + `mv`. `copy` sources
+  `lib/kubetui.zsh` only for `clip`; `record` sources nothing, to stay fast.
+  `voxhist app` builds `~/Applications/VoxHistBar.app` from
+  `lib/voxhist/app/main.swift` (same bundle steps as MonitorBar, no app icon);
+  it re-reads the file in `menuNeedsUpdate`. Not live — rerun `voxhist app`.
+  Test with `VOXHIST_FILE` pointing at a scratch file; never at the real one.
+
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each
 entry point sets `SELF=${0:A}` and sources `${0:A:h}/lib/...` (so `lib/` travels
@@ -148,7 +164,7 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 
 ## Testing
 
-- Syntax: `zsh -n kube logs ports lib/*.zsh` (run per file).
+- Syntax: `zsh -n kube logs ports voxhist lib/*.zsh` (run per file).
 - `monitor-linux`: `bash tests/monitor-linux.test.sh` — a fake `hyprctl` on
   `PATH` serves fixture JSON and logs the calls, so no test touches a display;
   `MONITOR_LID_DIR` points at a fake lid (open by default) — never let a test
@@ -182,8 +198,10 @@ lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
 lib/monitor/app/AppIcon.png      app icon, 1024 px; `monitor app` makes the .icns
 monitor-linux              Linux `monitor` (bash, Hyprland)
 lib/monitor/omarchy/       Omarchy bar widget (`monitor bar`)
+voxhist                    Voxtype history: post-process hook + list/copy (zsh)
+lib/voxhist/app/main.swift VoxHistBar menu bar app (`voxhist app`)
 tests/monitor-linux.test.sh
-install.sh                 symlinks the 4 entry points into ~/.local/bin (bash)
+install.sh                 symlinks the 5 entry points into ~/.local/bin (bash)
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
