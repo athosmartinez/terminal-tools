@@ -24,10 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // Event-driven instead of polling: macOS calls back on every display
         // change (our own toggle, the CLI, or the cable being unplugged).
-        CGDisplayRegisterReconfigurationCallback({ id, flags, context in
+        CGDisplayRegisterReconfigurationCallback({ _, flags, context in
             guard !flags.contains(.beginConfigurationFlag), let context else { return }
             let delegate = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
-            DispatchQueue.main.async { delegate.displayChanged(id, flags) }
+            DispatchQueue.main.async { delegate.refreshIcon() }
         }, Unmanaged.passUnretained(self).toOpaque())
 
         watchCable()
@@ -40,17 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func noteWake() { lastWake = Date() }
 
-    private func displayChanged(_ id: CGDirectDisplayID, _ flags: CGDisplayChangeSummaryFlags) {
-        refreshIcon()
-        log.notice("display \(id, privacy: .public) flags=\(flags.rawValue, privacy: .public) \(DisplayToggle.summary(), privacy: .public)")
-        // Only an added display counts: the enabled and disabled flags are the
-        // user's own toggle, and reacting to them would undo every Turn Off.
-        if flags.contains(.addFlag), CGDisplayIsBuiltin(id) == 0 { scheduleRestore() }
-    }
-
     // macOS creates this service when a USB-C port enters DisplayPort mode, so
-    // a plain charger never fires it. Matches that exist already are drained
-    // without acting: a display left off stays off across a relaunch or login.
+    // a plain charger never fires it. The display callback cannot replace it: a
+    // disabled display sends no add event when its cable is plugged back in.
+    // Matches that exist already are drained without acting: a display left
+    // off stays off across a relaunch or login.
     private func watchCable() {
         guard let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
         cablePort = port
@@ -83,8 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return count
     }
 
-    // One plug fires several events and WindowServer needs time to settle, so
-    // they collapse into a single attempt after the last one.
+    // WindowServer needs time to settle after a plug, and a flaky connector can
+    // fire more than once, so only the last event leads to an attempt.
     private func scheduleRestore() {
         pendingRestore?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.restoreAfterConnect() }

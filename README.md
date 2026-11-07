@@ -109,9 +109,8 @@ monitor bar          # Linux: install the Omarchy bar widget
 `monitor` uses a private CoreGraphics call (`CGSConfigureDisplayEnabled`), the
 same kind of switch display utilities use, so a future macOS may break it. It
 refuses `off` while the built-in display is inactive (lid closed), so the Mac is
-never left without a screen; unplugging and replugging the cable also restores
-the display. The wrapper compiles `lib/monitor/` on first run and whenever the
-source changes (binary cached in `~/.cache/terminal-tools/`).
+never left without a screen. The wrapper compiles `lib/monitor/` on first run
+and whenever the source changes (binary cached in `~/.cache/terminal-tools/`).
 
 `monitor app` builds **MonitorBar** into `~/Applications/MonitorBar.app`: a menu
 bar icon (`display` when on, `tv.slash` when off) with a one-click toggle and a

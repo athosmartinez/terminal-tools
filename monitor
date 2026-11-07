@@ -26,8 +26,8 @@ The HDMI value is vendor-specific: set it in ~/.config/terminal-tools/monitor.co
 as hdmi_input=<n> (default 17, the MCCS value; Samsung monitors use 5).
 
 Refuses 'off' while the built-in display is inactive (lid closed), so the Mac
-is never left without a screen. Unplugging and replugging the cable also
-restores the display.
+is never left without a screen. While MonitorBar runs, plugging the cable back
+in also restores the display.
 EOF
 }
 
