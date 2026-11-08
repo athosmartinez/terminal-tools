@@ -27,6 +27,14 @@ failed=0
 
 mon() { printf '{"name":"%s","disabled":%s,"dpmsStatus":%s}' "$1" "$2" "$3"; }
 
+phys() {
+  printf '{"name":"%s","disabled":%s,"dpmsStatus":%s,"make":"%s","model":"%s","width":2560,"height":1440}' "$@"
+}
+
+virt() {
+  printf '{"name":"%s","disabled":%s,"dpmsStatus":true,"make":"","model":"","width":1920,"height":1080}' "$1" "$2"
+}
+
 lid() { echo "state:      $1" >"$WORK/lid/LID/state"; }
 
 given() {
@@ -157,6 +165,56 @@ rm -rf "$WORK/lid/LID"
 monitor auto
 mkdir -p "$WORK/lid/LID"
 check "auto treats a machine without a lid as open" '[[ $CODE == 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 false true)" "$(virt STREAM false)"
+monitor status
+check "status ignores a virtual output" '[[ $OUT == absent ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)" "$(virt STREAM false)"
+monitor status
+check "status is streaming when the external display is off and a virtual output is on" '[[ $OUT == streaming ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 true true)" "$(virt STREAM true)"
+monitor status
+check "status is off when the virtual output is disabled" '[[ $OUT == off ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)" "$(virt STREAM false)"
+monitor status
+check "status is on when the external display is lit during a stream" '[[ $OUT == on ]]'
+
+given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)" "$(virt STREAM false)"
+lid closed
+monitor auto
+check "auto leaves a display that a stream turned off alone" '[[ $CODE == 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 false true)" "$(virt STREAM false)"
+monitor off
+check "off never disables a virtual output" '[[ $CODE != 0 && -z $CALLS ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)" "$(virt STREAM false)"
+monitor pause 0
+check "pause never disables a virtual output" \
+  '[[ $CODE == 0 && $CALLS == "eval hl.monitor({ output = \"HDMI-A-1\", disabled = true })"$'"'\n'"'"reload" ]]'
+
+given "$(phys eDP-1 true true "Chimei Innolux Corporation" 0x140A)" \
+  "$(phys HDMI-A-1 true true "Samsung Electric Company" LS27A600U)" "$(virt STREAM false)"
+lid closed
+monitor outputs
+EXPECTED='[{"name":"eDP-1","kind":"internal","label":"Built-in","state":"off","mode":"","reason":"lid closed"},'
+EXPECTED+='{"name":"HDMI-A-1","kind":"external","label":"Samsung LS27A600U","state":"off","mode":"","reason":"streaming"},'
+EXPECTED+='{"name":"STREAM","kind":"virtual","label":"STREAM","state":"on","mode":"1920x1080","reason":""}]'
+check "outputs describes each output with its kind, state and reason" '[[ $CODE == 0 && $OUT == "$EXPECTED" ]]'
+
+given "$(phys eDP-1 false true "Chimei Innolux Corporation" 0x140A)" \
+  "$(phys HDMI-A-1 false false "Samsung Electric Company" LS27A600U)"
+monitor outputs
+EXPECTED='"name":"HDMI-A-1","kind":"external","label":"Samsung LS27A600U","state":"asleep","mode":"2560x1440","reason":""'
+check "outputs reports an asleep display with its mode" '[[ $OUT == *"$EXPECTED"* ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 true true)"
+monitor outputs
+EXPECTED='"name":"HDMI-A-1","kind":"external","label":"HDMI-A-1","state":"off","mode":"","reason":""'
+check "outputs falls back to the output name without make or model" '[[ $OUT == *"$EXPECTED"* ]]'
 
 given "$(mon eDP-1 false true)"
 monitor bogus

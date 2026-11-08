@@ -2,6 +2,10 @@
 set -euo pipefail
 
 INTERNAL='^(eDP|LVDS|DSI)'
+KIND='def kind:
+  if (.name | test($re)) then "internal"
+  elif .make == "" and .model == "" then "virtual"
+  else "external" end;'
 PLUGIN_ID=terminal-tools.monitor
 PLUGIN_SRC=$(dirname "$(readlink -f "$0")")/lib/monitor/omarchy
 PLUGIN_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID
@@ -15,10 +19,14 @@ monitor — turn the external display off/on (Linux, Hyprland)
   monitor off         remove the external display from the layout
   monitor on          bring it back (hyprctl reload re-applies your monitor rules)
   monitor pause [s]   turn the external display off for s seconds (default 15), then back on
-  monitor status      print on, off or absent (default)
+  monitor status      print on, off, streaming or absent (default)
+  monitor outputs     print every output as JSON: kind, state, mode and why it is off
   monitor auto        turn a disabled external display back on when the lid is closed
   monitor bar         install the Omarchy bar widget
 
+A virtual output (headless, no make or model, e.g. a game-streaming display)
+is never treated as an external display. 'streaming' means the external
+display is off while a virtual output is on; 'auto' leaves that state alone.
 'off' refuses when the lid is closed or no built-in display stays active.
 'pause' also works with the lid closed, leaving no screen until it ends;
 'auto' leaves a running pause alone.
@@ -37,11 +45,15 @@ run() {
 
 monitors() { hyprctl monitors all -j; }
 
-names() {
-  jq -r ".[] | select($2) | .name" <<<"$1"
+query() {
+  local json=$1 filter=$2
+  shift 2
+  jq "$@" --arg re "$INTERNAL" "$KIND $filter" <<<"$json"
 }
 
-external() { echo "(.name | test(\"$INTERNAL\") | not) and ($1)"; }
+names() { query "$1" ".[] | select($2) | .name" -r; }
+
+external() { echo "kind == \"external\" and ($1)"; }
 
 lid_closed() { grep -qs closed "$LID_DIR"/*/state; }
 
@@ -52,11 +64,35 @@ dpms() {
 }
 
 state() {
-  jq -r --arg re "$INTERNAL" '
-    [.[] | select(.name | test($re) | not)] as $ext
+  query "$1" '
+    [.[] | select(kind == "external")] as $ext
     | if ($ext | length) == 0 then "absent"
       elif any($ext[]; .disabled == false and .dpmsStatus == true) then "on"
-      else "off" end' <<<"$(monitors)"
+      elif any(.[]; kind == "virtual" and .disabled == false) then "streaming"
+      else "off" end' -r
+}
+
+outputs() {
+  local lid=false
+  lid_closed && lid=true
+  query "$(monitors)" '
+    def title:
+      if kind == "internal" then "Built-in"
+      elif kind == "virtual" then .name
+      else [(.make // "" | split(" ")[0]), (.model // "")] | map(select(. != "")) | join(" ") end;
+    any(.[]; kind == "virtual" and .disabled == false) as $streaming
+    | map({
+        name,
+        kind: kind,
+        label: (title | if . == "" then null else . end) // .name,
+        state: (if .disabled then "off" elif .dpmsStatus then "on" else "asleep" end),
+        mode: (if .disabled then "" else "\(.width)x\(.height)" end),
+        reason: (
+          if .disabled | not then ""
+          elif kind == "internal" and $lid then "lid closed"
+          elif kind == "external" and $streaming then "streaming"
+          else "" end)
+      })' -c --argjson lid "$lid"
 }
 
 turn_off() {
@@ -64,7 +100,7 @@ turn_off() {
   json=$(monitors)
   mapfile -t active < <(names "$json" "$(external '.disabled == false')")
   ((${#active[@]})) || fail "no active external display"
-  mapfile -t builtin < <(names "$json" "(.name | test(\"$INTERNAL\")) and .disabled == false")
+  mapfile -t builtin < <(names "$json" 'kind == "internal" and .disabled == false')
   if ((${#builtin[@]} == 0)) || lid_closed; then
     fail "lid is closed or the built-in display is inactive — refusing to leave no screen"
   fi
@@ -104,11 +140,13 @@ pause() {
 }
 
 auto_on() {
-  local disabled
+  local json disabled
   if pausing || ! lid_closed; then
     return 0
   fi
-  mapfile -t disabled < <(names "$(monitors)" "$(external '.disabled == true')")
+  json=$(monitors)
+  [[ $(state "$json") == streaming ]] && return 0
+  mapfile -t disabled < <(names "$json" "$(external '.disabled == true')")
   if ((${#disabled[@]})); then
     run hyprctl reload
   fi
@@ -123,7 +161,8 @@ install_bar() {
 }
 
 case ${1:-status} in
-  status) state ;;
+  status) state "$(monitors)" ;;
+  outputs) outputs ;;
   off) turn_off ;;
   on) turn_on ;;
   pause) pause "${2:-}" ;;

@@ -112,6 +112,7 @@ monitor input <n>    # send a raw DDC input value (find your monitor's numbers)
 monitor app          # build + open MonitorBar, the menu bar toggle
 monitor pause [s]    # Linux: off for s seconds (default 15), then back on
 monitor auto         # Linux: lid closed + display disabled → turn it back on
+monitor outputs      # Linux: every output as JSON (kind, state, mode, why it is off)
 monitor bar          # Linux: install the Omarchy bar widget
 vox                  # the last Voxtype transcriptions, newest first
 vox copy [n]         # copy entry n (1 = newest) to the clipboard
@@ -165,6 +166,14 @@ that opens a menu with *Turn off* / *Turn off for 15 s*, or *Turn on*. Run it
 again after changing the widget. The widget also runs `monitor auto` on every
 refresh: when the lid is closed, a disabled external display comes back on by
 itself (a running pause is left alone).
+
+A virtual output — a headless display with no make or model, such as the one a
+game-streaming server (Sunshine, for example) creates for a remote client — is
+never treated as an external display, so `off` and `pause` never touch it. When
+the external display is off and a virtual output is on, `monitor status` prints
+`streaming` and `auto` leaves it alone: your monitor rules turned it off on
+purpose. The widget then shows a cast icon, and its menu lists every output
+with its state (`off · streaming`, `off · lid closed`, `on · 1920×1080`).
 
 **Voxtype history.** Voxtype types each dictation and keeps no copy, so a
 dictation typed into the wrong window is lost. `vox record` is a Voxtype
