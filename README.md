@@ -214,7 +214,8 @@ token (`GH_TOKEN`). The account comes from the first rule that matches:
 1. `GH_TOKEN` or `GITHUB_TOKEN` is set, or the command is `gh auth …`: the
    shim does nothing.
 2. `GH_ACCOUNT=<login>`: that account.
-3. `-R/--repo <owner>/<repo>`: the login for `<owner>` in
+3. `-R/--repo <owner>/<repo>`, or `gh repo <command> <owner>/<repo>` (clone,
+   view, fork…): the login for `<owner>` in
    `~/.config/terminal-tools/gh-shim.conf`, one `<owner> <login>` per line.
 4. Inside a git work tree: `git config credential.https://github.com.username`.
 5. Otherwise: the active account.

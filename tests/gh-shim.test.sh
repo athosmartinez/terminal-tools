@@ -69,6 +69,12 @@ check "-R with a URL" "token=token-work-login" \
   "$(cd "$WORK/home-repo" && gh pr view 1 -R https://github.com/work-org/app.git)"
 check "--repo=owner/repo form" "token=token-work-login" \
   "$(cd "$WORK/plain" && gh issue list --repo=work-org/app)"
+check "gh repo clone owner/repo uses the conf" "token=token-work-login args=repo clone work-org/app dir" \
+  "$(cd "$WORK/plain" && gh repo clone work-org/app dir)"
+check "gh repo view with a URL uses the conf" "token=token-work-login" \
+  "$(cd "$WORK/home-repo" && gh repo view https://github.com/work-org/app)"
+check "gh repo create name keeps the repo rule" "token=token-home-login" \
+  "$(cd "$WORK/home-repo" && gh repo create notes2 --private)"
 check "unknown --repo owner falls back to the active account" "token=<active>" \
   "$(cd "$WORK/work-repo" && gh pr list -R someone/else)"
 check "GH_ACCOUNT wins over the repo" "token=token-home-login" \
