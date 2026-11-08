@@ -10,7 +10,14 @@ BarWidget {
   moduleName: "terminal-tools.monitor"
 
   property string displayState: "absent"
+  property var outputs: []
   property bool popupOpen: false
+
+  readonly property var streams: outputs.filter(output => output.kind === "virtual" && output.state === "on")
+
+  readonly property string summary: displayState === "streaming"
+    ? "External display: off — streaming to " + streams.map(output => output.label + " " + size(output.mode)).join(", ")
+    : "External display: " + displayState
 
   readonly property var actions: displayState === "on"
     ? [
@@ -24,6 +31,28 @@ BarWidget {
     : []
 
   function close() { popupOpen = false }
+
+  function size(mode) { return mode.replace("x", "×") }
+
+  function describe(output) {
+    const detail = output.reason || size(output.mode)
+    return detail ? output.state + " · " + detail : output.state
+  }
+
+  function parseOutputs(line) {
+    try {
+      const parsed = JSON.parse(line)
+      return Array.isArray(parsed) ? parsed : []
+    } catch (error) {
+      return []
+    }
+  }
+
+  function applyStatus(text) {
+    const lines = text.trim().split("\n")
+    displayState = lines[0] || "absent"
+    outputs = parseOutputs(lines[1] || "")
+  }
 
   function refresh() {
     if (!statusProc.running) statusProc.running = true
@@ -40,9 +69,9 @@ BarWidget {
 
   Process {
     id: statusProc
-    command: ["sh", "-c", "monitor auto >/dev/null 2>&1; monitor status"]
+    command: ["sh", "-c", "monitor auto >/dev/null 2>&1; monitor status; monitor outputs 2>/dev/null"]
     stdout: StdioCollector {
-      onStreamFinished: root.displayState = text.trim() || "absent"
+      onStreamFinished: root.applyStatus(text)
     }
   }
 
@@ -71,10 +100,10 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.displayState === "on" ? "󰍹" : "󰶐"
+    text: root.displayState === "on" ? "󰍹" : root.displayState === "streaming" ? "󰄙" : "󰶐"
     slotSize: Style.bar.statusSlot
     fontSize: Style.font.caption
-    tooltipText: "External display: " + root.displayState
+    tooltipText: root.summary
     onPressed: root.popupOpen = !root.popupOpen
   }
 
@@ -84,7 +113,7 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    contentWidth: popup.fittedContentWidth(Style.space(220))
+    contentWidth: popup.fittedContentWidth(Style.space(280))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
     Column {
@@ -93,11 +122,51 @@ BarWidget {
       spacing: Style.space(4)
 
       Text {
+        width: column.width
         textFormat: Text.PlainText
-        text: "External display: " + root.displayState
+        text: root.summary
+        wrapMode: Text.Wrap
         color: Qt.darker(root.bar.foreground, 1.3)
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.bodySmall
+      }
+
+      Repeater {
+        model: root.outputs
+
+        Item {
+          id: outputRow
+          required property var modelData
+
+          width: column.width
+          implicitHeight: Style.space(26)
+
+          Text {
+            anchors.left: parent.left
+            anchors.leftMargin: Style.space(12)
+            anchors.right: outputState.left
+            anchors.rightMargin: Style.space(10)
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: outputRow.modelData.label
+            elide: Text.ElideRight
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Text {
+            id: outputState
+            anchors.right: parent.right
+            anchors.rightMargin: Style.space(12)
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: root.describe(outputRow.modelData)
+            color: outputRow.modelData.state === "on" ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.3)
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+        }
       }
 
       Repeater {

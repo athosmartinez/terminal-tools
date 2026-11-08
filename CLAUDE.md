@@ -89,7 +89,14 @@ other people and holds nothing private:
   writes its PID to `$XDG_RUNTIME_DIR/terminal-tools-monitor.pause` while it
   runs. `auto` reloads when the lid is closed and an external output is
   disabled, unless that PID is alive; it never touches a DPMS-asleep output
-  (idle/screensaver). Omarchy has no lid or monitor hook, so the bar widget
+  (idle/screensaver). An output with empty `make` and `model` is virtual
+  (a headless stream display, e.g. Sunshine's): never external, never
+  disabled. External off + virtual on = `streaming`, and `auto` skips it —
+  otherwise a monitor rule that disables the display during a stream, plus the
+  widget refreshing on `configreloaded`, made a reload loop (13 in 10 s).
+  `monitor outputs` prints one JSON array (`name`, `kind`, `label`, `state`,
+  `mode`, `reason`) for the widget menu. `label` is a jq keyword: the jq
+  helper is `title`. Omarchy has no lid or monitor hook, so the bar widget
   runs `monitor auto` before every `monitor status`. State
   comes from `hyprctl monitors all -j` (`.disabled`, `.dpmsStatus`), so there
   is no state file. `monitor bar` copies `lib/monitor/omarchy/` (manifest +
@@ -98,7 +105,9 @@ other people and holds nothing private:
   shell rescanPlugins` → `omarchy plugin enable`. The widget is NOT live —
   rerun `monitor bar` after editing it. It polls `monitor status` every 5 s
   and on Hyprland monitor events, runs actions detached via
-  `Quickshell.execDetached`, and turns a failure into `notify-send`.
+  `Quickshell.execDetached`, and turns a failure into `notify-send`. The shell's
+  plugin hot reload can keep the old QML from its component cache: if the bar
+  still shows the old widget after `monitor bar`, run `omarchy restart shell`.
 
 - `vox` — Voxtype (third-party, compiled Rust in `/Applications/Voxtype.app`,
   not in this repo) keeps no history and its log restarts with the daemon. So
