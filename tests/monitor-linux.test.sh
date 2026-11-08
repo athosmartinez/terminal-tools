@@ -182,6 +182,14 @@ given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)" "$(virt STREAM fals
 monitor status
 check "status is on when the external display is lit during a stream" '[[ $OUT == on ]]'
 
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false false)" "$(virt STREAM false)"
+monitor status
+check "status is streaming when the external display is asleep and a virtual output is on" '[[ $OUT == streaming ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)" "$(virt STREAM true)"
+monitor on
+check "on ignores a disabled virtual output" '[[ $CODE != 0 && -z $CALLS ]]'
+
 given "$(mon eDP-1 true true)" "$(mon HDMI-A-1 true true)" "$(virt STREAM false)"
 lid closed
 monitor auto
@@ -215,6 +223,16 @@ given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 true true)"
 monitor outputs
 EXPECTED='"name":"HDMI-A-1","kind":"external","label":"HDMI-A-1","state":"off","mode":"","reason":""'
 check "outputs falls back to the output name without make or model" '[[ $OUT == *"$EXPECTED"* ]]'
+
+given "$(mon eDP-1 false true)" "$(phys HDMI-A-1 false true "" X100)"
+monitor outputs
+EXPECTED='"name":"HDMI-A-1","kind":"external","label":"X100","state":"on","mode":"2560x1440","reason":""'
+check "outputs builds a label from the model alone without a make" '[[ $OUT == *"$EXPECTED"* ]]'
+
+given "$(mon eDP-1 false true)" "$(mon HDMI-A-1 false true)" "$(mon DP-2 true true)" "$(virt STREAM false)"
+monitor outputs
+EXPECTED='"name":"DP-2","kind":"external","label":"DP-2","state":"off","mode":"","reason":""'
+check "outputs gives no streaming reason while another external display is lit" '[[ $OUT == *"$EXPECTED"* ]]'
 
 given "$(mon eDP-1 false true)"
 monitor bogus

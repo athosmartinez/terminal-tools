@@ -2,10 +2,16 @@
 set -euo pipefail
 
 INTERNAL='^(eDP|LVDS|DSI)'
-KIND='def kind:
+JQ_DEFS='def kind:
   if (.name | test($re)) then "internal"
   elif .make == "" and .model == "" then "virtual"
-  else "external" end;'
+  else "external" end;
+def display_state:
+  [.[] | select(kind == "external")] as $ext
+  | if ($ext | length) == 0 then "absent"
+    elif any($ext[]; .disabled == false and .dpmsStatus == true) then "on"
+    elif any(.[]; kind == "virtual" and .disabled == false) then "streaming"
+    else "off" end;'
 PLUGIN_ID=terminal-tools.monitor
 PLUGIN_SRC=$(dirname "$(readlink -f "$0")")/lib/monitor/omarchy
 PLUGIN_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID
@@ -48,7 +54,7 @@ monitors() { hyprctl monitors all -j; }
 query() {
   local json=$1 filter=$2
   shift 2
-  jq "$@" --arg re "$INTERNAL" "$KIND $filter" <<<"$json"
+  jq "$@" --arg re "$INTERNAL" "$JQ_DEFS $filter" <<<"$json"
 }
 
 names() { query "$1" ".[] | select($2) | .name" -r; }
@@ -63,14 +69,7 @@ dpms() {
   run hyprctl dispatch "hl.dsp.dpms({ action = \"$1\", monitor = \"$2\" })"
 }
 
-state() {
-  query "$1" '
-    [.[] | select(kind == "external")] as $ext
-    | if ($ext | length) == 0 then "absent"
-      elif any($ext[]; .disabled == false and .dpmsStatus == true) then "on"
-      elif any(.[]; kind == "virtual" and .disabled == false) then "streaming"
-      else "off" end' -r
-}
+state() { query "$1" 'display_state' -r; }
 
 outputs() {
   local lid=false
@@ -79,8 +78,8 @@ outputs() {
     def title:
       if kind == "internal" then "Built-in"
       elif kind == "virtual" then .name
-      else [(.make // "" | split(" ")[0]), (.model // "")] | map(select(. != "")) | join(" ") end;
-    any(.[]; kind == "virtual" and .disabled == false) as $streaming
+      else [(.make // "" | split(" ")[0] // ""), (.model // "")] | map(select(. != "")) | join(" ") end;
+    (display_state == "streaming") as $streaming
     | map({
         name,
         kind: kind,
