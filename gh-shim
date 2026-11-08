@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+#
+# gh-shim — run the real GitHub CLI as the account that fits the repository.
+#
+# gh can hold several logged-in accounts, but it uses only the active one. git
+# can pick an account per repository (credential.https://github.com.username,
+# for example set by an includeIf). This shim makes gh follow the same choice.
+#
+# Install it as "gh" in a directory that comes before the real gh on PATH
+# (install.sh links it into ~/.local/share/terminal-tools/shims).
+#
+# The account comes from the first rule that matches:
+#   1. GH_TOKEN or GITHUB_TOKEN is set: gh uses it; the shim does nothing.
+#   2. "gh auth ...": the shim does nothing, so login, status and switch work.
+#   3. GH_ACCOUNT=<login>: that account.
+#   4. -R/--repo <owner>/<repo>: the account for <owner> in
+#      ~/.config/terminal-tools/gh-shim.conf (lines "<owner> <login>").
+#   5. Inside a git work tree: git config credential.https://github.com.username.
+#   6. Otherwise: the active gh account.
+#
+# GH_SHIM_DEBUG=1 prints the chosen account to stderr.
+# GH_SHIM_REAL=<path> sets the real gh; by default it is the next gh on PATH.
+
+set -uo pipefail
+
+CONF=${GH_SHIM_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/terminal-tools/gh-shim.conf}
+
+self_dir=$(cd "$(dirname "$0")" && pwd -P)
+
+find_real_gh() {
+  if [[ -n ${GH_SHIM_REAL:-} ]]; then
+    echo "$GH_SHIM_REAL"
+    return
+  fi
+  local dir candidate
+  local IFS=:
+  for dir in $PATH; do
+    [[ -n $dir ]] || continue
+    candidate="$dir/gh"
+    [[ -x $candidate && ! -d $candidate ]] || continue
+    [[ $(cd "$dir" 2>/dev/null && pwd -P) == "$self_dir" ]] && continue
+    echo "$candidate"
+    return
+  done
+}
+
+real=$(find_real_gh)
+if [[ -z $real ]]; then
+  echo "gh-shim: no real gh found on PATH" >&2
+  exit 127
+fi
+
+ARGS=("$@")
+
+debug() {
+  [[ ${GH_SHIM_DEBUG:-} == 1 ]] && echo "gh-shim: $*" >&2
+  return 0
+}
+
+passthrough() {
+  debug "$1"
+  exec "$real" ${ARGS[@]+"${ARGS[@]}"}
+}
+
+[[ -n ${GH_TOKEN:-}${GITHUB_TOKEN:-} ]] && passthrough "token from the environment"
+[[ ${1:-} == auth ]] && passthrough "auth command"
+[[ -n ${GH_HOST:-} && $GH_HOST != github.com ]] && passthrough "host $GH_HOST"
+
+# The owner in a -R/--repo value: owner/repo, host/owner/repo or a URL.
+repo_owner() {
+  local value=${1%.git}
+  value=${value#*://}
+  local IFS=/
+  # shellcheck disable=SC2206
+  local parts=($value)
+  case ${#parts[@]} in
+    2) echo "${parts[0]}" ;;
+    3) echo "${parts[1]}" ;;
+  esac
+}
+
+repo_arg() {
+  local i=0 arg
+  while ((i < ${#ARGS[@]})); do
+    arg=${ARGS[i]}
+    case $arg in
+      -R | --repo)
+        echo "${ARGS[i + 1]:-}"
+        return
+        ;;
+      --repo=*)
+        echo "${arg#--repo=}"
+        return
+        ;;
+      -R?*)
+        echo "${arg#-R}"
+        return
+        ;;
+      --) return ;;
+    esac
+    i=$((i + 1))
+  done
+}
+
+account_for_owner() {
+  [[ -r $CONF ]] || return 0
+  local owner login
+  while read -r owner login _; do
+    [[ -z $owner || $owner == \#* ]] && continue
+    if [[ $owner == "$1" ]]; then
+      echo "$login"
+      return
+    fi
+  done <"$CONF"
+}
+
+account=""
+reason=""
+if [[ -n ${GH_ACCOUNT:-} ]]; then
+  account=$GH_ACCOUNT
+  reason="GH_ACCOUNT"
+else
+  repo=$(repo_arg)
+  if [[ -n $repo ]]; then
+    owner=$(repo_owner "$repo")
+    account=$(account_for_owner "$owner")
+    reason="--repo owner $owner"
+  elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    account=$(git config --get credential.https://github.com.username 2>/dev/null)
+    reason="git config of this repository"
+  fi
+fi
+
+[[ -n $account ]] || passthrough "active account (no rule matched)"
+
+token=$("$real" auth token -h github.com -u "$account" 2>/dev/null)
+if [[ -z $token ]]; then
+  echo "gh-shim: account $account ($reason) is not logged in. Run: gh auth login" >&2
+  exit 1
+fi
+
+debug "$account ($reason)"
+GH_TOKEN=$token exec "$real" ${ARGS[@]+"${ARGS[@]}"}

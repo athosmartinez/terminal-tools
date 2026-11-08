@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# install.sh — symlink kube, logs, ports, monitor and vox into ~/.local/bin.
+# install.sh — symlink kube, logs, ports, monitor and vox into ~/.local/bin,
+# and gh-shim as "gh" into ~/.local/share/terminal-tools/shims.
 # The shared lib/ is resolved relative to each script, so it stays in the repo.
 #
 #   ./install.sh              symlink into ~/.local/bin (default)
@@ -29,6 +30,21 @@ done
 case ":$PATH:" in
   *":$BIN:"*) ;;
   *) printf '\033[33mnote:\033[0m %s is not on your $PATH — add it to use the tools by name\n' "$BIN" ;;
+esac
+
+# gh-shim replaces "gh" on PATH, so it gets its own directory: putting that
+# directory first must not move the other tools ahead of system commands.
+SHIMS=${SHIMS:-$HOME/.local/share/terminal-tools/shims}
+mkdir -p "$SHIMS"
+if [[ -e $SHIMS/gh && ! -L $SHIMS/gh ]]; then
+  printf '\033[33m⚠  %s exists and is not a symlink — skipping\033[0m\n' "$SHIMS/gh"
+else
+  ln -sfn "$REPO/gh-shim" "$SHIMS/gh"
+  printf '\033[32m✓\033[0m linked %s → %s\n' "$SHIMS/gh" "$REPO/gh-shim"
+fi
+case ":$PATH:" in
+  "$SHIMS:"*) ;;
+  *) printf '\033[33mnote:\033[0m to use gh-shim, put %s FIRST on $PATH\n' "$SHIMS" ;;
 esac
 
 echo

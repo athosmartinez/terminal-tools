@@ -27,6 +27,7 @@ repo.
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
 | **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
 | **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
+| **`gh-shim`** | No TUI: a wrapper installed as `gh`. With several GitHub accounts logged in to `gh`, it runs each command as the account that git uses for the current repository, instead of the one active account. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -201,6 +202,29 @@ copies the full text, and the tooltip shows it. Like MonitorBar, it is an agent
 app with "Launch at Login" on by default. It reads the daemon's
 `/tmp/voxtype/state` and `pid` once a second, and the history when the menu
 opens.
+
+**One `gh` per repository (`gh-shim`).** `gh` can hold several logged-in
+accounts (`gh auth login` once per account), but every command uses the active
+one. git can already pick an account per repository: set
+`credential.https://github.com.username`, for example in a file that an
+`includeIf "hasconfig:remote.*.url:https://github.com/<org>/**"` loads.
+`gh-shim` reads that same value and runs the real `gh` with that account's
+token (`GH_TOKEN`). The account comes from the first rule that matches:
+
+1. `GH_TOKEN` or `GITHUB_TOKEN` is set, or the command is `gh auth …`: the
+   shim does nothing.
+2. `GH_ACCOUNT=<login>`: that account.
+3. `-R/--repo <owner>/<repo>`: the login for `<owner>` in
+   `~/.config/terminal-tools/gh-shim.conf`, one `<owner> <login>` per line.
+4. Inside a git work tree: `git config credential.https://github.com.username`.
+5. Otherwise: the active account.
+
+`install.sh` links it as `~/.local/share/terminal-tools/shims/gh`. That
+directory must come **before** the real `gh` on `PATH`, in every shell that
+runs `gh` (on macOS, `brew shellenv` in `~/.zprofile` puts Homebrew first, so
+prepend the shim directory again after it). Check the choice with
+`GH_SHIM_DEBUG=1 gh api user --jq .login`. A tool that calls the real `gh` by
+its full path skips the shim.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

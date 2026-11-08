@@ -42,6 +42,14 @@ other people and holds nothing private:
 
 ## What each tool is
 
+- `gh-shim` — bash, installed as `gh` in `~/.local/share/terminal-tools/shims`
+  (its own directory, which must be first on PATH). It picks the GitHub
+  account per command (GH_ACCOUNT, `--repo` owner via
+  `~/.config/terminal-tools/gh-shim.conf`, or the repo's
+  `credential.https://github.com.username`) and execs the next real `gh` on
+  PATH with `GH_TOKEN`. `gh auth …` and a preset token pass through. It must
+  stay bash 3.2 compatible (macOS `/bin/bash`). Test:
+  `bash tests/gh-shim.test.sh` (fake `gh`, temp git repos, no network).
 - `kube` — a keyboard-first Kubernetes cockpit (single persistent fzf).
 - `logs` — follow workload logs across namespaces (one color per pod).
 - `ports` — view/kill processes on TCP ports (`lsof`). Self-contained on purpose:
