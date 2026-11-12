@@ -11,7 +11,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
-    private let source = BLEBatterySource()
+    private let source: BatterySource = BLEBatterySource()
     private var config = BatteryConfig.load()
     private var pollTimer: Timer?
     private var hidPort: IONotificationPortRef?

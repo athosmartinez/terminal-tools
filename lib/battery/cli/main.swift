@@ -15,7 +15,7 @@ func fail(_ message: String, _ code: Int32) -> Never {
 var config = BatteryConfig.load()
 if showAll { config.show = nil }
 
-let source = BLEBatterySource()
+let source: BatterySource = BLEBatterySource()
 var done = false
 source.onChange = {
     switch source.state {

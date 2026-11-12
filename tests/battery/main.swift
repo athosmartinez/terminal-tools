@@ -95,6 +95,31 @@ check("status: name, label, percent aligned; low marked",
        "Mouse M2     MS   85%",
        "Pad=Pro 7    PD    5%  low"])
 
+// MARK: a fake source drives the title, as BLEBatterySource does in the app
+
+final class FakeSource: BatterySource {
+    var onChange: (() -> Void)?
+    var state: SourceState = .starting
+    var devices: [Device] = []
+    var pending: Int { devices.filter { $0.percent == nil }.count }
+    func start() { state = .ready; onChange?() }
+    func refresh() {}
+    func poll() {}
+    func report(_ devices: [Device]) { self.devices = devices; onChange?() }
+}
+
+let fake = FakeSource()
+let source: BatterySource = fake   // the app and the CLI see only the protocol
+var titles: [String] = []
+source.onChange = { titles.append(titleText(source.devices, config)) }
+source.start()
+fake.report([Device(id: "2", name: "Mouse M2", percent: nil)])
+check("source: pending counts the devices not read yet", source.pending, 1)
+fake.report([Device(id: "2", name: "Mouse M2", percent: 12), keyboard])
+check("source: every change renders a new title",
+      titles, ["", "MS --", "KB 100%  ⚠\u{FE0E}MS 12%"])
+check("source: nothing pending once every device answered", source.pending, 0)
+
 // MARK: GATT value
 
 check("battery level: first byte", batteryLevel(Data([85, 1])), 85)
