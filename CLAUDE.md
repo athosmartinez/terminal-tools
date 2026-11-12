@@ -174,9 +174,15 @@ other people and holds nothing private:
     (+5 s), or on Refresh Now.
   - Config `~/.config/terminal-tools/battery.conf` (`BATTERY_CONFIG`
     overrides it): `<name>=<label>` (label after the last `=`), `show=`,
-    `low=`, `interval=`. Order is the `show=` order, else by name — never
+    `low=`, `interval=`, `layout=stacked|inline`. Order is the `show=` order, else by name — never
     discovery order, which changes per run. No device names in code or tests:
     the tests use fakes (`Keyboard K1`); real names only in the README example.
+  - The stacked title (default, 2+ devices) is an `NSImage` drawn by
+    `stackedImage`: 10 pt monospaced digits, two lines in
+    `NSStatusBar.system.thickness`, columns split by `titleColumns`. With no
+    low value it is a template (the bar tints it); with one it is in color,
+    drawn under the button's `effectiveAppearance`, which is observed (KVO) to
+    redraw when the bar turns light or dark.
 
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each

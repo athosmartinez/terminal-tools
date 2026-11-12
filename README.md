@@ -28,7 +28,7 @@ repo.
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
 | **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
 | **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
-| **`battery`** | No TUI (macOS): the battery of every connected Bluetooth device that has the standard GATT Battery Service, read from the device itself — so it also works for BLE keyboards that macOS shows no battery for. Ships **BatteryBar**, a menu bar item with short labels (`KB 100%  MS 85%`) and a warning mark when one runs low. |
+| **`battery`** | No TUI (macOS): the battery of every connected Bluetooth device that has the standard GATT Battery Service, read from the device itself — so it also works for BLE keyboards that macOS shows no battery for. Ships **BatteryBar**, a menu bar item with short labels stacked in two lines (`KB 100%` over `MS 85%`) and a warning mark when one runs low. |
 | **`gh-shim`** | No TUI: a wrapper installed as `gh`. With several GitHub accounts logged in to `gh`, it runs each command as the account that git uses for the current repository, instead of the one active account. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
@@ -235,6 +235,8 @@ show=LF,MX
 low=20
 # optional: seconds between reads for a device without notifications (default 300)
 interval=300
+# optional: the menu bar title, two lines per column (default) or one line
+layout=stacked
 ```
 
 The name on the left is the one that `battery -a` prints. A device with no
@@ -243,8 +245,10 @@ line, every device shows, sorted by name; with one, only the devices it lists
 show, in its order.
 
 `battery app` builds **BatteryBar** into `~/Applications/BatteryBar.app`. The
-title is the labels and percents, `LF 94%  MX 100%`; a value at or below `low=`
-gets a `⚠` and turns orange, and with no device connected the item is a
+title is the labels and percents in small type, two lines per column like a
+weather item (`LF 94%` over `MX 100%`; a third device starts a second column).
+`layout=inline` puts them on one line instead: `LF 94%  MX 100%`. A value at
+or below `low=` gets a `⚠` and turns orange, and with no device connected the item is a
 battery icon alone. The menu lists each device with its full name and percent,
 plus *Refresh Now*, *Open Config…* (it writes a commented template when the
 file is missing), *Launch at Login* (on by default) and *Quit*. A device that
