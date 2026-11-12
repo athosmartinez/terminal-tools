@@ -2,8 +2,10 @@
 
 Guidance for AI-assisted work on **terminal-tools** (`kube`, `logs`, `ports` —
 three zsh + fzf terminal TUIs — plus `monitor`, a macOS Swift CLI and menu bar
-app, with a separate Linux/Hyprland version in bash, and `vox`, a Voxtype
-companion: transcription history plus a menu bar app with the daemon state). Conventions and gotchas live here; user-facing
+app, with a separate Linux/Hyprland version in bash, `vox`, a Voxtype
+companion: transcription history plus a menu bar app with the daemon state,
+and `battery`, a macOS Swift CLI and menu bar app with the battery of the
+connected Bluetooth devices). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
@@ -137,6 +139,45 @@ other people and holds nothing private:
   Test with `VOX_HISTORY_FILE` / `VOX_STATE_DIR` at scratch paths, never the
   real ones.
 
+- `battery` — macOS only. Reads the GATT Battery Service (0x180F, Battery
+  Level 0x2A19, first byte = percent) of every peripheral that is already
+  connected: `retrieveConnectedPeripherals(withServices: [180F])`, then
+  `connect` (an app-level link over the system's connection, no scan),
+  discover, read, and `setNotifyValue` when the characteristic has `notify`.
+  This is the only way to see many BLE keyboards: `system_profiler` and
+  `ioreg BatteryPercent` show no battery for them. Same layout as `monitor`:
+  `lib/battery/Battery.swift` is pure Foundation (config, labels, order,
+  title) and is the only file the tests compile; `BLE.swift` is the
+  CoreBluetooth `BatterySource`; the wrapper rebuilds the CLI by `-nt`;
+  `battery app` builds `~/Applications/BatteryBar.app` (no app icon; the
+  Info.plist has `NSBluetoothAlwaysUsageDescription`). Not live — rerun
+  `battery app`. Gotchas:
+  - `retrieveConnectedPeripherals` is empty before `.poweredOn`; rescan only
+    from `centralManagerDidUpdateState`. `.unauthorized` must not look like
+    "no device": the CLI exits 2, the app shows a menu line.
+  - Keep a strong reference to every connected `CBPeripheral`, or the link
+    drops silently.
+  - The CLI binary embeds an Info.plist (`-sectcreate __TEXT __info_plist`)
+    with the usage text, for a run outside a terminal. From a terminal, the
+    permission (and its text) is the terminal app's: a build with no plist
+    worked there too.
+  - Ad-hoc signing: every `battery app` rebuild changes the cdhash, so the
+    Bluetooth grant can turn into `.unauthorized` silently. Fix:
+    `tccutil reset BluetoothAlways com.athosmartinez.terminal-tools.batterybar`,
+    relaunch, allow again.
+  - macOS CoreBluetooth has no system "device connected" event
+    (`registerForConnectionEvents` is iOS only). The app watches IOKit for an
+    `IOHIDDevice` with `Transport = "Bluetooth Low Energy"` (first match +
+    terminated; drain the iterator to arm it; nothing is opened, so no Input
+    Monitoring) and rescans 2 s later, because GATT is not ready at the match.
+    Non-HID devices show on the `interval=` timer (default 300 s), on wake
+    (+5 s), or on Refresh Now.
+  - Config `~/.config/terminal-tools/battery.conf` (`BATTERY_CONFIG`
+    overrides it): `<name>=<label>` (label after the last `=`), `show=`,
+    `low=`, `interval=`. Order is the `show=` order, else by name — never
+    discovery order, which changes per run. No device names in code or tests:
+    the tests use fakes (`Keyboard K1`); real names only in the README example.
+
 `kube` and `logs` source `lib/kubetui.zsh`; `kube` also sources
 `lib/kube-actions.zsh` (action registry) and `lib/kube-data.zsh` (feeds). Each
 entry point sets `SELF=${0:A}` and sources `${0:A:h}/lib/...` (so `lib/` travels
@@ -207,7 +248,10 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 
 ## Testing
 
-- Syntax: `zsh -n kube logs ports vox lib/*.zsh` (run per file).
+- Syntax: `zsh -n kube logs ports vox battery lib/*.zsh` (run per file).
+- `battery`: `bash tests/battery.test.sh` compiles `lib/battery/Battery.swift`
+  with `tests/battery/main.swift` (no Bluetooth, fake devices). The real check
+  is `./battery` on a Mac with devices connected.
 - `monitor-linux`: `bash tests/monitor-linux.test.sh` — a fake `hyprctl` on
   `PATH` serves fixture JSON and logs the calls, so no test touches a display;
   `MONITOR_LID_DIR` points at a fake lid (open by default) — never let a test
@@ -244,12 +288,18 @@ lib/monitor/omarchy/       Omarchy bar widget (`monitor bar`)
 vox                        Voxtype companion: post-process hook, list/copy, status (zsh)
 lib/vox/app/main.swift     VoxBar menu bar app (`vox app`)
 lib/vox/app/AppIcon.png    app icon, 1024 px; `vox app` makes the .icns
+battery                    entry point (zsh wrapper, macOS) → lib/battery/
+lib/battery/Battery.swift  config, labels, order, title (pure, tested)
+lib/battery/BLE.swift      CoreBluetooth reader (GATT Battery Service)
+lib/battery/cli/main.swift `battery [status] [-a]`
+lib/battery/app/main.swift BatteryBar menu bar app (`battery app`)
 tests/monitor-linux.test.sh
-install.sh                 symlinks the 5 entry points into ~/.local/bin (bash)
+tests/battery.test.sh      + tests/battery/main.swift
+install.sh                 symlinks the 6 entry points into ~/.local/bin (bash)
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
-`lsof` (ports), `swiftc` (monitor and vox, macOS), `jq` + `hyprctl` (monitor,
+`lsof` (ports), `swiftc` (monitor, vox and battery, macOS), `jq` + `hyprctl` (monitor,
 Linux), Voxtype (vox).
 
 ## Platform (macOS / Linux / WSL2)

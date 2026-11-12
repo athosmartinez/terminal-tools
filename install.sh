@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install.sh — symlink kube, logs, ports, monitor and vox into ~/.local/bin,
+# install.sh — symlink kube, logs, ports, monitor, vox and battery into ~/.local/bin,
 # and gh-shim as "gh" into ~/.local/share/terminal-tools/shims.
 # The shared lib/ is resolved relative to each script, so it stays in the repo.
 #
@@ -13,7 +13,7 @@ REPO=$(cd "$(dirname "$0")" && pwd -P)
 BIN=${BIN:-$HOME/.local/bin}
 mkdir -p "$BIN"
 
-for tool in kube logs ports monitor vox; do
+for tool in kube logs ports monitor vox battery; do
   src="$REPO/$tool"
   if [[ $tool == monitor && $(uname -s) == Linux ]]; then
     src="$REPO/monitor-linux"
@@ -48,4 +48,4 @@ case ":$PATH:" in
 esac
 
 echo
-printf 'Dependencies: \033[36mfzf\033[0m (required), \033[36mkubectl\033[0m (kube/logs), \033[36mlsof\033[0m (ports), \033[36mswiftc\033[0m (monitor, macOS), \033[36mjq\033[0m + \033[36mhyprctl\033[0m (monitor, Linux), \033[36mvoxtype\033[0m (vox).\n'
+printf 'Dependencies: \033[36mfzf\033[0m (required), \033[36mkubectl\033[0m (kube/logs), \033[36mlsof\033[0m (ports), \033[36mswiftc\033[0m (monitor, macOS), \033[36mjq\033[0m + \033[36mhyprctl\033[0m (monitor, Linux), \033[36mvoxtype\033[0m (vox), \033[36mswiftc\033[0m (battery, macOS).\n'

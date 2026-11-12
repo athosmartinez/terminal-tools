@@ -8,12 +8,13 @@
 
 Small terminal tools for macOS and Linux. Three are keyboard-driven TUIs built
 on [fzf](https://github.com/junegunn/fzf): a Kubernetes cockpit (`kube`), a log
-follower (`logs`), and a TCP-port process killer (`ports`). Two are plain
+follower (`logs`), and a TCP-port process killer (`ports`). Three are plain
 commands with a menu bar app: `monitor` turns the external display off without
-unplugging it (USB-C keeps charging), on macOS and on Linux with Hyprland, and
+unplugging it (USB-C keeps charging), on macOS and on Linux with Hyprland;
 `vox` is a [Voxtype](https://github.com/peteonrails/voxtype) companion that
 shows the daemon state and keeps the last transcriptions so you can copy one
-again.
+again; and `battery` (macOS) shows the battery of the connected Bluetooth
+devices, also of keyboards that macOS shows no battery for.
 
 Every tool is generic: nothing in this repo is tied to one machine or one
 person. A value that differs per machine (a monitor's HDMI input number, a
@@ -27,6 +28,7 @@ repo.
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
 | **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
 | **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
+| **`battery`** | No TUI (macOS): the battery of every connected Bluetooth device that has the standard GATT Battery Service, read from the device itself — so it also works for BLE keyboards that macOS shows no battery for. Ships **BatteryBar**, a menu bar item with short labels (`KB 100%  MS 85%`) and a warning mark when one runs low. |
 | **`gh-shim`** | No TUI: a wrapper installed as `gh`. With several GitHub accounts logged in to `gh`, it runs each command as the account that git uses for the current repository, instead of the one active account. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
@@ -79,6 +81,8 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
   or Linux with Hyprland, `bash` and `jq` (the bar widget needs Omarchy)
 - `vox`: [Voxtype](https://github.com/peteonrails/voxtype); `swiftc` for
   the menu bar app (macOS)
+- `battery`: macOS with `swiftc`, and the Bluetooth permission (macOS asks
+  once: for your terminal app, and for BatteryBar)
 - Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
   `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
   `xdg-open`, `wslview` or `explorer.exe`). Without them the action still tells
@@ -89,10 +93,10 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
 ```sh
 git clone https://github.com/athosmartinez/terminal-tools.git
 cd terminal-tools
-./install.sh            # symlinks kube, logs, ports, monitor, vox into ~/.local/bin
+./install.sh            # symlinks kube, logs, ports, monitor, vox, battery into ~/.local/bin
 ```
 
-`install.sh` symlinks the five entry points into `~/.local/bin` (make sure it's
+`install.sh` symlinks the six entry points into `~/.local/bin` (make sure it's
 on your `$PATH`). Because they're symlinks, editing files in the repo updates the
 installed tools instantly. The shared `lib/` is resolved relative to each script,
 so it travels with the repo.
@@ -120,6 +124,9 @@ vox copy [n]         # copy entry n (1 = newest) to the clipboard
 vox status           # ready / recording / transcribing / not running
 vox hook             # print the Voxtype config that saves them
 vox app              # build + open VoxBar, the Voxtype menu bar item (macOS)
+battery              # battery of the connected Bluetooth devices: name, label, percent
+battery -a           # the same, with the devices that show= hides
+battery app          # build + open BatteryBar, the battery menu bar item (macOS)
 <tool> -h            # help  ·  press ? inside any picker for the keys
 ```
 
@@ -202,6 +209,55 @@ copies the full text, and the tooltip shows it. Like MonitorBar, it is an agent
 app with "Launch at Login" on by default. It reads the daemon's
 `/tmp/voxtype/state` and `pid` once a second, and the history when the menu
 opens.
+
+**Bluetooth battery (`battery`).** macOS shows the battery of some Bluetooth
+devices and not of others: many BLE keyboards report it only through the
+standard GATT Battery Service (`0x180F`, Battery Level `0x2A19`), which macOS
+does not show. `battery` asks each connected device for that value with
+CoreBluetooth. It does not scan: it lists the devices that are already
+connected to the Mac and opens its own link over each existing connection.
+
+```console
+$ battery
+Flow2-68@Lofree  LF   94%
+MX Master 3S     MX  100%
+```
+
+Short labels and the other options live in
+`~/.config/terminal-tools/battery.conf` (an example):
+
+```ini
+Flow2-68@Lofree=LF
+MX Master 3S=MX
+# optional: only these devices (name or label), in this order
+show=LF,MX
+# optional: mark a value at or below this percent (default 20)
+low=20
+# optional: seconds between reads for a device without notifications (default 300)
+interval=300
+```
+
+The name on the left is the one that `battery -a` prints. A device with no
+label shows the first two letters of its name in upper case. With no `show=`
+line, every device shows, sorted by name; with one, only the devices it lists
+show, in its order.
+
+`battery app` builds **BatteryBar** into `~/Applications/BatteryBar.app`. The
+title is the labels and percents, `LF 94%  MX 100%`; a value at or below `low=`
+gets a `⚠` and turns orange, and with no device connected the item is a
+battery icon alone. The menu lists each device with its full name and percent,
+plus *Refresh Now*, *Open Config…* (it writes a commented template when the
+file is missing), *Launch at Login* (on by default) and *Quit*. A device that
+sends notifications updates by itself; the others are read again every
+`interval=` seconds. A BLE keyboard or mouse that connects or disconnects
+updates the item in about 2 seconds. Other devices show on the next read or on
+*Refresh Now*.
+
+Limits: a device that reports its battery only through a vendor protocol (for
+example a Logitech mouse on a Logi Bolt or Unifying receiver, which uses HID++)
+has no Battery Service and shows nothing. Bluetooth Classic devices without
+BLE do not show either. The first run asks for the Bluetooth permission: for
+your terminal app (`battery`) and for BatteryBar (`battery app`).
 
 **One `gh` per repository (`gh-shim`).** `gh` can hold several logged-in
 accounts (`gh auth login` once per account), but every command uses the active

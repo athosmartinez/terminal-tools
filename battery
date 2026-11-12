@@ -1,0 +1,126 @@
+#!/usr/bin/env zsh
+#
+# battery — the battery of the connected Bluetooth devices (macOS), read from
+# each device's GATT Battery Service. This reaches devices that macOS shows no
+# battery for, such as many BLE keyboards.
+#
+# The work is done by lib/battery/ (Swift, CoreBluetooth). This wrapper
+# compiles the CLI on first run and whenever a source is newer than the cached
+# binary, so editing the repo stays live like the other tools. `battery app`
+# builds the menu bar app from the same core.
+#
+emulate -L zsh
+
+usage() {
+  cat <<'EOF'
+battery — the battery of the connected Bluetooth devices (macOS)
+
+  battery [status]  one line per device: name, label, percent (default)
+  battery -a        the same, with the devices that show= hides
+  battery app       build and open BatteryBar, the menu bar item
+                    (~/Applications/BatteryBar.app; no Dock icon, starts at login)
+
+Labels live in ~/.config/terminal-tools/battery.conf, one per line:
+  <device name>=<label>     for example: My Keyboard=KB
+  show=KB,<device name>     optional: only these devices, in this order
+  low=20                    optional: mark a value at or below this percent
+  interval=300              optional: seconds between reads (no notifications)
+
+A device with no label shows the first two letters of its name. Only devices
+with the standard Battery Service show; a device that reports its battery
+through a vendor protocol (for example Logitech HID++ over a receiver) does not.
+The first run asks for the Bluetooth permission of your terminal app.
+EOF
+}
+
+case $1 in
+  -h|--help) usage; exit 0 ;;
+esac
+
+if [[ $(uname -s) != Darwin ]]; then
+  print -u2 "battery: macOS only"
+  exit 1
+fi
+
+if ! (( $+commands[swiftc] )); then
+  print -u2 "battery: swiftc not found — install the Xcode Command Line Tools: xcode-select --install"
+  exit 1
+fi
+
+SRC=${0:A:h}/lib/battery
+CORE=( $SRC/*.swift )   # shared by the CLI and the app
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/terminal-tools
+BLUETOOTH_REASON="Reads the battery level of connected Bluetooth devices."
+
+# Swift 5 language mode: the CoreBluetooth and AppKit delegates run on the
+# main queue, with no need for Swift 6 strict-concurrency annotations.
+build() {  # build <output> <sources and swiftc args...>
+  local out=$1; shift
+  mkdir -p ${out:h}
+  print -u2 "\$ swiftc -O -swift-version 5 ${@:t} -o $out"
+  swiftc -O -swift-version 5 "$@" -o "$out"
+}
+
+case ${1:-status} in
+  app)
+    APP=$HOME/Applications/BatteryBar.app
+    BIN=$APP/Contents/MacOS/BatteryBar
+    build "$BIN" $CORE "$SRC/app/main.swift" || exit 1
+    cat > $APP/Contents/Info.plist <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>                <string>com.athosmartinez.terminal-tools.batterybar</string>
+  <key>CFBundleName</key>                      <string>BatteryBar</string>
+  <key>CFBundleExecutable</key>                <string>BatteryBar</string>
+  <key>CFBundlePackageType</key>               <string>APPL</string>
+  <key>CFBundleShortVersionString</key>        <string>1.0</string>
+  <key>CFBundleVersion</key>                   <string>1</string>
+  <key>LSMinimumSystemVersion</key>            <string>13.0</string>
+  <key>LSUIElement</key>                       <true/>
+  <key>NSBluetoothAlwaysUsageDescription</key> <string>$BLUETOOTH_REASON</string>
+</dict>
+</plist>
+EOF
+    # Ad-hoc signature: required to run on Apple Silicon and for SMAppService
+    # (Launch at Login) to accept the bundle.
+    print -u2 "\$ codesign --force --sign - $APP"
+    codesign --force --sign - "$APP" || exit 1
+    # Replace a running copy so the new build takes effect.
+    pkill -x BatteryBar && sleep 0.5
+    print -u2 "\$ open $APP"
+    open "$APP"
+    ;;
+
+  status|-a|--all)
+    [[ $1 == status ]] && shift
+    BIN=$CACHE/battery
+    # An Info.plist inside the binary (__TEXT,__info_plist) carries the
+    # Bluetooth usage text. From a terminal, the terminal's grant and text
+    # apply; the embedded one counts when the binary runs on its own (launchd).
+    PLIST=$CACHE/battery-Info.plist
+    stale=0
+    [[ -x $BIN ]] || stale=1
+    for f in $CORE $SRC/cli/main.swift ${0:A}; do [[ $f -nt $BIN ]] && stale=1; done
+    if (( stale )); then
+      mkdir -p $CACHE
+      cat > $PLIST <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>                <string>com.athosmartinez.terminal-tools.battery</string>
+  <key>CFBundleName</key>                      <string>battery</string>
+  <key>NSBluetoothAlwaysUsageDescription</key> <string>$BLUETOOTH_REASON</string>
+</dict>
+</plist>
+EOF
+      build "$BIN" $CORE "$SRC/cli/main.swift" \
+        -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker $PLIST || exit 1
+    fi
+    exec "$BIN" "$@"
+    ;;
+
+  *) usage >&2; exit 1 ;;
+esac
