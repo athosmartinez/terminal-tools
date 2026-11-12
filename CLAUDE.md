@@ -149,8 +149,9 @@ other people and holds nothing private:
   `lib/battery/Battery.swift` is pure Foundation (config, labels, order,
   title) and is the only file the tests compile; `BLE.swift` is the
   CoreBluetooth `BatterySource`; the wrapper rebuilds the CLI by `-nt`;
-  `battery app` builds `~/Applications/BatteryBar.app` (no app icon; the
-  Info.plist has `NSBluetoothAlwaysUsageDescription`). Not live — rerun
+  `battery app` builds `~/Applications/BatteryBar.app` (app icon from
+  `lib/battery/app/AppIcon.png`, drawn by `swift lib/battery/app/AppIcon.swift
+  <png>`; the Info.plist has `NSBluetoothAlwaysUsageDescription`). Not live — rerun
   `battery app`. Gotchas:
   - `retrieveConnectedPeripherals` is empty before `.poweredOn`; rescan only
     from `centralManagerDidUpdateState`. `.unauthorized` must not look like
@@ -301,6 +302,7 @@ lib/battery/Battery.swift  config, labels, order, title (pure, tested)
 lib/battery/BLE.swift      CoreBluetooth reader (GATT Battery Service)
 lib/battery/cli/main.swift `battery [status] [-a]`
 lib/battery/app/main.swift BatteryBar menu bar app (`battery app`)
+lib/battery/app/AppIcon.png  app icon, 1024 px; AppIcon.swift draws it
 tests/monitor-linux.test.sh
 tests/battery.test.sh      + tests/battery/main.swift
 install.sh                 symlinks the 6 entry points into ~/.local/bin (bash)
