@@ -87,6 +87,16 @@ check("title: not read yet shows --",
 check("title: unlabeled device uses its first letters",
       titleText([Device(id: "9", name: "Headset", percent: 40)], defaults), "HE 40%")
 
+// MARK: stacked layout
+
+check("default layout is stacked", defaults.layout, .stacked)
+check("layout=inline", BatteryConfig.parse("layout=inline").layout, .inline)
+check("unknown layout keeps the default", BatteryConfig.parse("layout=diagonal").layout, .stacked)
+let three = titleParts([keyboard, mouse, Device(id: "3", name: "Pad=Pro 7", percent: 5)], config)
+check("stacked: two per column, top to bottom, then left to right",
+      titleColumns(three).map { $0.map(\.text) }, [["KB 100%", "MS 85%"], ["⚠\u{FE0E}PD 5%"]])
+check("stacked: no device, no column", titleColumns([]).count, 0)
+
 // MARK: status lines
 
 check("status: name, label, percent aligned; low marked",

@@ -42,12 +42,15 @@ protocol BatterySource: AnyObject {
 ///   low=<n>                 mark a value at or below n percent (default 20)
 ///   interval=<s>            seconds between reads when a device has no
 ///                           notifications (default 300)
+///   layout=stacked|inline   the menu bar title: two lines per column
+///                           (default), or one line
 /// `#` starts a comment. A name may hold `=`; the label is after the last one.
 struct BatteryConfig: Equatable {
     var labels: [String: String] = [:]
     var show: [String]? = nil
     var low = 20
     var interval: TimeInterval = 300
+    var layout = TitleLayout.stacked
 
     static let defaultURL: URL = {
         if let path = ProcessInfo.processInfo.environment["BATTERY_CONFIG"] {
@@ -68,6 +71,8 @@ struct BatteryConfig: Equatable {
         #   low=20
         # Optional: seconds between reads for a device without notifications (default 300).
         #   interval=300
+        # Optional: the menu bar title, two lines per column (stacked) or one line (inline).
+        #   layout=stacked
 
         """
 
@@ -93,6 +98,8 @@ struct BatteryConfig: Equatable {
                 if let n = Int(value), (0...100).contains(n) { config.low = n }
             case "interval":
                 if let n = TimeInterval(value), n >= 10 { config.interval = n }
+            case "layout":
+                if let layout = TitleLayout(rawValue: value) { config.layout = layout }
             default:
                 if !value.isEmpty { config.labels[key] = value }
             }
@@ -135,6 +142,14 @@ struct BatteryConfig: Equatable {
     }
 }
 
+/// How BatteryBar draws its title.
+enum TitleLayout: String {
+    /// Columns of two small lines, like a weather item: "KB 100%" over "MS 85%".
+    case stacked
+    /// One line: "KB 100%  MS 85%".
+    case inline
+}
+
 /// "85%", or "--" when the value is not known yet.
 func percentText(_ percent: Int?) -> String {
     percent.map { "\($0)%" } ?? "--"
@@ -159,6 +174,12 @@ func titleParts(_ devices: [Device], _ config: BatteryConfig) -> [TitlePart] {
 /// and the app then shows only a battery icon.
 func titleText(_ devices: [Device], _ config: BatteryConfig) -> String {
     titleParts(devices, config).map(\.text).joined(separator: "  ")
+}
+
+/// The stacked title: columns of two lines, filled top to bottom, then left
+/// to right. Three devices make two columns: [a, b] and [c].
+func titleColumns(_ parts: [TitlePart]) -> [[TitlePart]] {
+    stride(from: 0, to: parts.count, by: 2).map { Array(parts[$0..<min($0 + 2, parts.count)]) }
 }
 
 /// One line per device for `battery status`: name, label, percent, aligned.

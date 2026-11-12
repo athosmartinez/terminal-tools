@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pollTimer: Timer?
     private var hidPort: IONotificationPortRef?
     private var pendingRescan: DispatchWorkItem?
+    private var appearanceObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -24,6 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         source.onChange = { [weak self] in self?.render() }
         source.start()
         render()
+        // The menu bar turns light or dark with the wallpaper; a stacked
+        // title in color must be drawn again then.
+        appearanceObservation = statusItem.button?.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.render() }
+        }
         registerLoginOnFirstLaunch()
         schedulePoll()
         watchBluetoothHID()
@@ -46,8 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.toolTip = stateMessage ?? "No connected device reports its battery"
             return
         }
-        button.image = nil
         button.toolTip = nil
+        button.setAccessibilityTitle(titleText(source.devices, config))
+        if config.layout == .stacked && parts.count > 1 {
+            button.attributedTitle = NSAttributedString()
+            button.image = stackedImage(parts, appearance: button.effectiveAppearance)
+            return
+        }
+        button.image = nil
         // Monospaced digits, so the title does not change width with the values.
         let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         let title = NSMutableAttributedString()
@@ -58,6 +70,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             title.append(NSAttributedString(string: part.text, attributes: attributes))
         }
         button.attributedTitle = title
+    }
+
+    /// Columns of two small lines, like the weather item. With no low value
+    /// the image is a template, so the menu bar tints it for light and dark.
+    /// A low value is drawn orange: the image is then in color, with the text
+    /// color of the button's appearance, and an appearance change redraws it.
+    private func stackedImage(_ parts: [TitlePart], appearance: NSAppearance) -> NSImage {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        let columns = titleColumns(parts)
+        let widths = columns.map { column in
+            column.map { ceil(($0.text as NSString).size(withAttributes: [.font: font]).width) }.max() ?? 0
+        }
+        let gap: CGFloat = 8
+        let height = NSStatusBar.system.thickness
+        let width = widths.reduce(0, +) + gap * CGFloat(columns.count - 1)
+        // Two lines share the bar height; the font's leading may overlap.
+        let line = min(ceil(font.ascender - font.descender), height / 2)
+        let top = (height - 2 * line) / 2
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
+            appearance.performAsCurrentDrawingAppearance {
+                var x: CGFloat = 0
+                for (column, columnWidth) in zip(columns, widths) {
+                    for (row, part) in column.enumerated() {
+                        let color: NSColor = part.low ? .systemOrange : .labelColor
+                        (part.text as NSString).draw(at: NSPoint(x: x, y: top + CGFloat(row) * line),
+                                                     withAttributes: [.font: font, .foregroundColor: color])
+                    }
+                    x += columnWidth + gap
+                }
+            }
+            return true
+        }
+        image.isTemplate = !parts.contains { $0.low }
+        return image
     }
 
     /// Why no device can show, or nil when Bluetooth works.
