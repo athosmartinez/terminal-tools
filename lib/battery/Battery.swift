@@ -40,7 +40,7 @@ protocol BatterySource: AnyObject {
 ///   show=<a>,<b>            only these devices (name or label), in this order
 ///   low=<n>                 mark a value at or below n percent (default 20)
 ///   interval=<s>            seconds between two reads of every device
-///                           (default 300); notifications also arrive at once
+///                           (default 1800); notifications also arrive at once
 ///   layout=stacked|inline   the menu bar title: two lines per column
 ///                           (default), or one line
 /// `#` starts a comment. A name may hold `=`; the label is after the last one.
@@ -48,7 +48,7 @@ struct BatteryConfig: Equatable {
     var labels: [String: String] = [:]
     var show: [String]? = nil
     var low = 20
-    var interval: TimeInterval = 300
+    var interval: TimeInterval = 1800
     var layout = TitleLayout.stacked
 
     static let defaultURL: URL = {
@@ -68,9 +68,9 @@ struct BatteryConfig: Equatable {
         #   show=KB,MS
         # Optional: mark a value at or below this percent (default 20).
         #   low=20
-        # Optional: seconds between two reads of every device (default 300).
+        # Optional: seconds between two reads of every device (default 1800).
         # A device that sends notifications also updates at once.
-        #   interval=300
+        #   interval=1800
         # Optional: the menu bar title, two lines per column (stacked) or one line (inline).
         #   layout=stacked
 

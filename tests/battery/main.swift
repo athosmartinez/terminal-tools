@@ -41,9 +41,9 @@ check("no show= line means show everything", config.show, nil)
 
 let defaults = BatteryConfig.parse("")
 check("default low is 20", defaults.low, 20)
-check("default interval is 5 min", defaults.interval, 300)
+check("default interval is 30 min", defaults.interval, 1800)
 check("bad low keeps the default", BatteryConfig.parse("low=abc\nlow=150").low, 20)
-check("too short interval keeps the default", BatteryConfig.parse("interval=1").interval, 300)
+check("too short interval keeps the default", BatteryConfig.parse("interval=1").interval, 1800)
 check("show list is trimmed, empty items dropped",
       BatteryConfig.parse("show= KB , ,Mouse M2").show, ["KB", "Mouse M2"])
 check("the template parses to the defaults", BatteryConfig.parse(BatteryConfig.template), defaults)

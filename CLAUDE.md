@@ -170,7 +170,7 @@ other people and holds nothing private:
     `IOHIDDevice` with `Transport = "Bluetooth Low Energy"` (first match +
     terminated; drain the iterator to arm it; nothing is opened, so no Input
     Monitoring) and rescans 2 s later, because GATT is not ready at the match.
-    Non-HID devices show on the `interval=` timer (default 300 s), on wake
+    Non-HID devices show on the `interval=` timer (default 1800 s), on wake
     (+5 s), or on Refresh Now. The timer reads every device again, also the
     ones with notifications, so the "last" time on Refresh Now (`lastUpdate`,
     the last value that arrived) is never older than the interval.
