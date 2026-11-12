@@ -24,7 +24,7 @@ Labels live in ~/.config/terminal-tools/battery.conf, one per line:
   <device name>=<label>     for example: My Keyboard=KB
   show=KB,<device name>     optional: only these devices, in this order
   low=20                    optional: mark a value at or below this percent
-  interval=300              optional: seconds between reads (no notifications)
+  interval=300              optional: seconds between two reads of every device
 
 A device with no label shows the first two letters of its name. Only devices
 with the standard Battery Service show; a device that reports its battery

@@ -17,6 +17,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hidPort: IONotificationPortRef?
     private var pendingRescan: DispatchWorkItem?
     private var appearanceObservation: NSKeyValueObservation?
+    private let timeFormat: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -150,7 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r").target = self
+        menu.addItem(withTitle: refreshTitle(last: source.lastUpdate, formatter: timeFormat),
+                     action: #selector(refreshNow), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "Open Config…", action: #selector(openConfig), keyEquivalent: ",").target = self
         menu.addItem(.separator())
         let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
@@ -200,13 +206,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Refresh triggers
 
-    // Values with notifications arrive by themselves; the timer reads the
-    // others again and looks for devices that the HID watch cannot see.
+    // The timer reads every device again, also the ones with notifications,
+    // so the "last" time in the menu is never older than the interval. It
+    // also finds devices that the HID watch cannot see.
     private func schedulePoll() {
         pollTimer?.invalidate()
         let timer = Timer(timeInterval: config.interval, repeats: true) { [weak self] _ in
             self?.reloadConfig()
-            self?.source.poll()
+            self?.source.refresh()
         }
         timer.tolerance = min(30, config.interval / 10)
         RunLoop.main.add(timer, forMode: .common)

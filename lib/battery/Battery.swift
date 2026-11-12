@@ -28,20 +28,19 @@ protocol BatterySource: AnyObject {
     var devices: [Device] { get }
     /// Devices found but not read yet; the CLI waits until this is zero.
     var pending: Int { get }
+    /// When the last value arrived (a read or a notification), or nil.
+    var lastUpdate: Date? { get }
     func start()
     /// Look for connected devices again and read every value again.
     func refresh()
-    /// The timer path: look for devices again, and read again only the values
-    /// that do not arrive as notifications.
-    func poll()
 }
 
 /// ~/.config/terminal-tools/battery.conf, one `key=value` per line:
 ///   <device name>=<label>   short label for the menu bar
 ///   show=<a>,<b>            only these devices (name or label), in this order
 ///   low=<n>                 mark a value at or below n percent (default 20)
-///   interval=<s>            seconds between reads when a device has no
-///                           notifications (default 300)
+///   interval=<s>            seconds between two reads of every device
+///                           (default 300); notifications also arrive at once
 ///   layout=stacked|inline   the menu bar title: two lines per column
 ///                           (default), or one line
 /// `#` starts a comment. A name may hold `=`; the label is after the last one.
@@ -69,7 +68,8 @@ struct BatteryConfig: Equatable {
         #   show=KB,MS
         # Optional: mark a value at or below this percent (default 20).
         #   low=20
-        # Optional: seconds between reads for a device without notifications (default 300).
+        # Optional: seconds between two reads of every device (default 300).
+        # A device that sends notifications also updates at once.
         #   interval=300
         # Optional: the menu bar title, two lines per column (stacked) or one line (inline).
         #   layout=stacked
@@ -174,6 +174,13 @@ func titleParts(_ devices: [Device], _ config: BatteryConfig) -> [TitlePart] {
 /// and the app then shows only a battery icon.
 func titleText(_ devices: [Device], _ config: BatteryConfig) -> String {
     titleParts(devices, config).map(\.text).joined(separator: "  ")
+}
+
+/// The *Refresh Now* menu item, with the time of the last value:
+/// "Refresh Now — last 18:56:04".
+func refreshTitle(last: Date?, formatter: DateFormatter) -> String {
+    guard let last else { return "Refresh Now" }
+    return "Refresh Now — last \(formatter.string(from: last))"
 }
 
 /// The stacked title: columns of two lines, filled top to bottom, then left

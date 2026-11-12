@@ -233,7 +233,7 @@ MX Master 3S=MX
 show=LF,MX
 # optional: mark a value at or below this percent (default 20)
 low=20
-# optional: seconds between reads for a device without notifications (default 300)
+# optional: seconds between two reads of every device (default 300)
 interval=300
 # optional: the menu bar title, two lines per column (default) or one line
 layout=stacked
@@ -250,10 +250,11 @@ weather item (`LF 94%` over `MX 100%`; a third device starts a second column).
 `layout=inline` puts them on one line instead: `LF 94%  MX 100%`. A value at
 or below `low=` gets a `⚠` and turns orange, and with no device connected the item is a
 battery icon alone. The menu lists each device with its full name and percent,
-plus *Refresh Now*, *Open Config…* (it writes a commented template when the
-file is missing), *Launch at Login* (on by default) and *Quit*. A device that
-sends notifications updates by itself; the others are read again every
-`interval=` seconds. A BLE keyboard or mouse that connects or disconnects
+plus *Refresh Now* with the time of the last value (`Refresh Now — last
+18:56:04`), *Open Config…* (it writes a commented template when the file is
+missing), *Launch at Login* (on by default) and *Quit*. Every device is read
+again every `interval=` seconds (default 5 minutes), and a device that sends
+notifications also updates at once when its value changes. A BLE keyboard or mouse that connects or disconnects
 updates the item in about 2 seconds. Other devices show on the next read or on
 *Refresh Now*.
 

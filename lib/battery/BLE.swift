@@ -17,6 +17,7 @@ private let batteryLevelUUID = CBUUID(string: "2A19")
 final class BLEBatterySource: NSObject, BatterySource, CBCentralManagerDelegate, CBPeripheralDelegate {
     var onChange: (() -> Void)?
     private(set) var state: SourceState = .starting
+    private(set) var lastUpdate: Date?
 
     private var central: CBCentralManager?
     // Strong references: CoreBluetooth drops the link of a peripheral that
@@ -51,15 +52,6 @@ final class BLEBatterySource: NSObject, BatterySource, CBCentralManagerDelegate,
         }
     }
 
-    /// The timer path: look for connected devices again, and read only the
-    /// values that do not arrive as notifications.
-    func poll() {
-        rescan()
-        for (id, characteristic) in characteristics where !characteristic.isNotifying {
-            peripherals[id]?.readValue(for: characteristic)
-        }
-    }
-
     // MARK: - Devices
 
     private func rescan() {
@@ -90,7 +82,10 @@ final class BLEBatterySource: NSObject, BatterySource, CBCentralManagerDelegate,
     private func finish(_ id: UUID, level: Int?) {
         guard peripherals[id] != nil else { return }
         answered.insert(id)
-        if let level { levels[id] = level }
+        if let level {
+            levels[id] = level
+            lastUpdate = Date()
+        }
         onChange?()
     }
 

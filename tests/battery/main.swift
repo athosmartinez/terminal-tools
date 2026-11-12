@@ -111,10 +111,10 @@ final class FakeSource: BatterySource {
     var onChange: (() -> Void)?
     var state: SourceState = .starting
     var devices: [Device] = []
+    var lastUpdate: Date?
     var pending: Int { devices.filter { $0.percent == nil }.count }
     func start() { state = .ready; onChange?() }
     func refresh() {}
-    func poll() {}
     func report(_ devices: [Device]) { self.devices = devices; onChange?() }
 }
 
@@ -129,6 +129,15 @@ fake.report([Device(id: "2", name: "Mouse M2", percent: 12), keyboard])
 check("source: every change renders a new title",
       titles, ["", "MS --", "KB 100%  ⚠\u{FE0E}MS 12%"])
 check("source: nothing pending once every device answered", source.pending, 0)
+
+// MARK: refresh time
+
+let clock = DateFormatter()
+clock.dateFormat = "HH:mm:ss"
+clock.timeZone = TimeZone(identifier: "UTC")
+check("refresh: no value yet, no time", refreshTitle(last: nil, formatter: clock), "Refresh Now")
+check("refresh: the time of the last value",
+      refreshTitle(last: Date(timeIntervalSince1970: 68_164), formatter: clock), "Refresh Now — last 18:56:04")
 
 // MARK: GATT value
 
