@@ -178,7 +178,12 @@ machine whose window has the focus: click once inside the stream.
 The menu shows the display's size and position, because you cannot see it. The
 display lives inside MonitorBar: quitting the app, or *Turn Off Virtual Display*,
 removes it, and macOS moves its windows back. It never stays as the only
-display: when no real display is active, MonitorBar removes it. `monitor off`,
+display: when no real display is active, MonitorBar removes it, and adds it
+again when a real display comes back (lid opened, wake). When a monitor is
+plugged in or out, the display moves to its new place by itself. macOS can move
+the Moonlight window off the virtual display then; MonitorBar does not move it
+back by itself, but the icon gets a warning badge and the menu says *Moonlight
+left the virtual display*: use *Move Moonlight to Virtual Display*. `monitor off`,
 `on` and `status` ignore it. Settings, in `~/.config/terminal-tools/monitor.conf`:
 
 ```ini

@@ -21,6 +21,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Where each Moonlight window was before it went to the virtual display,
     // and if it was in full screen there.
     private var moonlightHome: [pid_t: (frame: CGRect, fullScreen: Bool)] = [:]
+    // True from Turn On to Turn Off. The app can lose the display without the
+    // user: with no real display active it turns the display off, and it
+    // turns it on again when a real display comes back.
+    private var virtualWanted = false
+    // The Moonlight processes that the user sent to the virtual display, and
+    // whether one of their windows is not there now.
+    private var moonlightOnVirtual: Set<pid_t> = []
+    private var moonlightLeft = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -63,21 +71,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // One attempt after the last event: a change of displays arrives as a
     // burst of callbacks, and WindowServer lists a new display a moment late.
-    private func schedulePlacement() {
-        guard virtual.displayID != nil else { return }
+    private func schedulePlacement(attempt: Int = 1) {
+        guard virtualWanted else { return }
         pendingPlacement?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.placeVirtual() }
+        let work = DispatchWorkItem { [weak self] in self?.placeVirtual(attempt: attempt) }
         pendingPlacement = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
+    // A plug or unplug takes some seconds to settle, and the virtual display
+    // can be out of the list for all of them.
+    private static let placementAttempts = 8
+
     // Silent like the cable restore: it also runs with nobody at the menu.
-    private func placeVirtual() {
+    private func placeVirtual(attempt: Int) {
+        let config = MonitorConfig.load()
         do {
-            try virtual.place(MonitorConfig.load())
+            guard virtual.displayID != nil else {
+                // Off since no real display was active (lid closed, sleep).
+                guard VirtualDisplay.anchor(try DisplayToggle.displays(online: false)) != nil else { return }
+                try virtual.turnOn(config)
+                log.notice("virtual display: on again \(DisplayToggle.summary(), privacy: .public)")
+                schedulePlacement()
+                return
+            }
+            if try virtual.place(config) {
+                checkMoonlight()
+            } else if attempt < Self.placementAttempts {
+                schedulePlacement(attempt: attempt + 1)
+            } else {
+                log.error("virtual display: not active after \(attempt, privacy: .public) attempts \(DisplayToggle.summary(), privacy: .public)")
+            }
         } catch {
             log.error("virtual display: \(String(describing: error), privacy: .public)")
         }
+        refreshIcon()
+    }
+
+    // Only a warning: the user moves the window with the menu, so a window
+    // never jumps to a display that nobody sees while the user works in it.
+    private func checkMoonlight() {
+        let running = Set(moonlightPIDs)
+        moonlightOnVirtual.formIntersection(running)
+        var left = false
+        if !moonlightOnVirtual.isEmpty, let id = virtual.displayID, virtual.isOn, AXIsProcessTrusted() {
+            let bounds = CGDisplayBounds(id)
+            left = moonlightOnVirtual.contains { Moonlight.leftVirtual(window: try? AppWindow.frame(pid: $0), virtual: bounds) }
+        }
+        if left != moonlightLeft {
+            log.notice("moonlight: \(left ? "left" : "back on", privacy: .public) the virtual display")
+        }
+        moonlightLeft = left
+        refreshIcon()
     }
 
     // macOS creates this service when a USB-C port enters DisplayPort mode, so
@@ -146,16 +191,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshIcon() {
         let state = DisplayToggle.state()
-        let image = NSImage(systemSymbolName: state == .on ? "display" : "tv.slash",
-                            accessibilityDescription: "External display")
+        let image = moonlightLeft
+            ? NSImage(systemSymbolName: "display.trianglebadge.exclamationmark",
+                      accessibilityDescription: "Moonlight left the virtual display")
+            : NSImage(systemSymbolName: state == .on ? "display" : "tv.slash",
+                      accessibilityDescription: "External display")
         image?.isTemplate = true
         statusItem.button?.image = image
-        statusItem.button?.appearsDisabled = state == .absent
+        statusItem.button?.appearsDisabled = state == .absent && !moonlightLeft
     }
 
     // Rebuilt on every open so the labels always match the current state.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        checkMoonlight()
         let state = DisplayToggle.state()
 
         let header: String
@@ -204,6 +253,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if moonlightPIDs.isEmpty {
             menu.addItem(withTitle: "Open Moonlight on Virtual Display", action: #selector(openMoonlight), keyEquivalent: "").target = self
         } else {
+            if moonlightLeft {
+                menu.addItem(withTitle: "Moonlight left the virtual display", action: nil, keyEquivalent: "").isEnabled = false
+            }
             menu.addItem(withTitle: "Move Moonlight to Virtual Display", action: #selector(moveMoonlightToVirtual), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Move Moonlight to Main Display", action: #selector(moveMoonlightToMain), keyEquivalent: "").target = self
         }
@@ -212,12 +264,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleVirtual() {
         if virtual.isOn {
             virtual.turnOff()
+            virtualWanted = false
+            pendingPlacement?.cancel()
             // macOS moves the windows back by itself, to places of its choice.
             moonlightHome.removeAll()
+            moonlightOnVirtual.removeAll()
+            moonlightLeft = false
+            refreshIcon()
             return
         }
         do {
             try virtual.turnOn(MonitorConfig.load())
+            virtualWanted = true
             schedulePlacement()
         } catch {
             showError(error)
@@ -240,9 +298,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.arguments = arguments
             configuration.createsNewApplicationInstance = true
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] _, error in
-                guard let error else { return }
-                DispatchQueue.main.async { self?.showError(error) }
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
+                DispatchQueue.main.async {
+                    if let error { self?.showError(error) }
+                    if let pid = app?.processIdentifier { self?.moonlightOnVirtual.insert(pid) }
+                }
             }
         } catch {
             showError(error)
@@ -316,10 +376,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // to the remote screen with no dead border.
                 return (Moonlight.frame(onVirtual: bounds, visible: visible, window: frame,
                                         current: displays.first { $0.contains(middle) }), true)
-            }, arrived: { bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) })
+            }, arrived: { bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) },
+               moved: { moonlightOnVirtual.insert($0) })
         } catch {
             showError(error)
         }
+        checkMoonlight()
     }
 
     @objc private func moveMoonlightToMain() {
@@ -340,10 +402,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return (goal, goal == frame ? nil : home?.fullScreen)
             }, arrived: { frame in
                 real.contains { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) }
-            }, moved: { moonlightHome[$0] = nil })
+            }, moved: {
+                moonlightHome[$0] = nil
+                moonlightOnVirtual.remove($0)
+            })
         } catch {
             showError(error)
         }
+        checkMoonlight()
     }
 
     @objc private func toggleDisplay() {

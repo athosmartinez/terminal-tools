@@ -112,7 +112,17 @@ other people and holds nothing private:
     cannot loop. Anchor = the external monitor, else the built-in panel; it
     gives y, and x is past every real display on that side, so the virtual
     display never lands on one. With no real display active `place` turns the
-    virtual display off.
+    virtual display off; the app keeps `virtualWanted` and turns it on again
+    when a placement finds a real display (lid opened, wake). While a monitor
+    is plugged in or out, WindowServer leaves the virtual display out of the
+    active list for a moment: `place` returns false and the app tries again,
+    up to 8 times 1 s apart (one try gave "not active" and left it there).
+  - After a placement the app checks the Moonlight windows that the user sent
+    to the virtual display (`moonlightOnVirtual`): macOS moves them off a
+    display that leaves the list and never back. It does not move them (the
+    owner's choice): the icon gets a warning badge and the menu says
+    "Moonlight left the virtual display" above the *Move* items. A window that
+    AX cannot find counts as left (`Moonlight.leftVirtual`).
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and
     `createsNewApplicationInstance` (a child `Process` would run under
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the

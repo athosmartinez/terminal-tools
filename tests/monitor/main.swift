@@ -176,6 +176,16 @@ check("back: a window that is on a real display stays where it is",
       Moonlight.frame(onReal: [main], visible: mainVisible, remembered: CGRect(x: 10, y: 40, width: 800, height: 600),
                       window: home), home)
 
+check("left: a full screen stream on the virtual display is there",
+      Moonlight.leftVirtual(window: virtualBounds, virtual: virtualBounds), false)
+check("left: a window that macOS moved to the built-in panel is not there",
+      Moonlight.leftVirtual(window: CGRect(x: 0, y: 38, width: 1710, height: 1074), virtual: virtualBounds), true)
+check("left: the virtual display moved beside the built-in panel and took the window with it",
+      Moonlight.leftVirtual(window: CGRect(x: 1710, y: 0, width: 1920, height: 1080),
+                            virtual: CGRect(x: 1710, y: 0, width: 1920, height: 1080)), false)
+check("left: a lost window counts as not there",
+      Moonlight.leftVirtual(window: nil, virtual: virtualBounds), true)
+
 check("AppKit to global: the primary screen below its menu bar",
       Moonlight.global(cocoa: CGRect(x: 0, y: 0, width: 2560, height: 1415), primaryHeight: 1440), mainVisible)
 check("AppKit to global: a screen on the right, top edges aligned",

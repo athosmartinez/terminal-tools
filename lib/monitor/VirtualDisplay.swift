@@ -86,13 +86,15 @@ final class VirtualDisplay {
 
     /// Moves the display beside its anchor. WindowServer adds a new display a
     /// moment after `turnOn` returns, so the caller runs this a little later
-    /// and again when the set of displays changes.
-    func place(_ config: MonitorConfig) throws {
-        guard let id = displayID else { return }
+    /// and again when the set of displays changes. Returns false when the
+    /// display is not active yet: while a monitor is plugged in or out,
+    /// WindowServer leaves the virtual display out of the list for a moment,
+    /// so the caller tries again.
+    @discardableResult
+    func place(_ config: MonitorConfig) throws -> Bool {
+        guard let id = displayID else { return true }
         let active = try DisplayToggle.displays(online: false)
-        guard active.contains(where: { $0.id == id }) else {
-            throw DisplayToggleError(description: "the virtual display is not active")
-        }
+        guard active.contains(where: { $0.id == id }) else { return false }
         // With no real display active, the virtual one is the whole desktop:
         // every window is on a screen that nobody can see.
         guard let anchor = Self.anchor(active) else {
@@ -103,7 +105,7 @@ final class VirtualDisplay {
         let real = active.filter { !$0.isVirtual }.map { CGDisplayBounds($0.id) }
         let wanted = Self.origin(anchor: CGDisplayBounds(anchor), real: real, width: bounds.width,
                                  side: config.virtualSide, y: config.virtualY)
-        guard bounds.origin != wanted else { return }
+        guard bounds.origin != wanted else { return true }
 
         var configuration: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&configuration) == .success else {
@@ -118,6 +120,7 @@ final class VirtualDisplay {
         guard CGCompleteDisplayConfiguration(configuration, .permanently) == .success else {
             throw DisplayToggleError(description: "cannot apply display configuration")
         }
+        return true
     }
 
     // MARK: rules (pure)
@@ -286,6 +289,15 @@ enum Moonlight {
         let size = CGSize(width: min(window.width, visible.width), height: min(window.height, visible.height))
         return CGRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2,
                       width: size.width, height: size.height)
+    }
+
+    /// True when a Moonlight window that the user sent to the virtual display
+    /// is not there now. macOS moves windows off a display that leaves the
+    /// list, also for a moment while a monitor is plugged in or out, and does
+    /// not move them back. No window (nil) also counts: the window was lost.
+    static func leftVirtual(window: CGRect?, virtual: CGRect) -> Bool {
+        guard let window else { return true }
+        return !virtual.contains(CGPoint(x: window.midX, y: window.midY))
     }
 
     /// AppKit counts y up from the bottom of the primary screen. Displays and
