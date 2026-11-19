@@ -212,6 +212,8 @@ Limits:
   belongs to one build: after `monitor app`, remove MonitorBar from that list and
   add it again, or run
   `tccutil reset Accessibility com.athosmartinez.terminal-tools.monitorbar`.
+- A stream in full screen leaves full screen, moves, and enters full screen
+  again on the other display; the stream stays connected.
 - A moved window with a title bar fills the area below the menu bar, so the
   video is a little smaller than the display. The pointer still maps to the
   whole remote screen. A borderless stream covers the virtual display 1:1.
