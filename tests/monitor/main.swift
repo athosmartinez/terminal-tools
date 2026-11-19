@@ -51,6 +51,8 @@ check("default Moonlight app", defaults.moonlightApp, "Desktop")
 check("bad values keep the defaults",
       MonitorConfig.parse("hdmi_input=x\nvirtual_size=1920\nvirtual_size=0x0\nvirtual_size=99999x1080\nvirtual_side=up\nvirtual_y=top\nmoonlight_app="),
       defaults)
+check("a virtual_y out of range keeps the default, also the smallest integer",
+      [MonitorConfig.parse("virtual_y=10001").virtualY, MonitorConfig.parse("virtual_y=\(Int.min)").virtualY], [0, 0])
 check("a host may hold =", MonitorConfig.parse("moonlight_host=a=b").moonlightHost, "a=b")
 
 // MARK: which displays are external
