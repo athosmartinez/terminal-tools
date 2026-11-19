@@ -123,7 +123,10 @@ other people and holds nothing private:
     Moonlight to Virtual Display* / *to Main Display*, which move its main
     window with the Accessibility API (`AppWindow`: `kAXPosition`/`kAXSize`,
     size-position-size). The frame before the move is kept per pid in the app
-    (`moonlightHome`) for the way back. The target frames are pure
+    (`moonlightHome`) for the way back, and dropped only after the window
+    took it. A window that covers its current display is a borderless stream
+    and covers the virtual one; a titled window fills the visible area. A
+    window on a real display is left where it is. The target frames are pure
     (`Moonlight.frame(onVirtual:…)`, `frame(onReal:…)`); AppKit rectangles go
     through `Moonlight.global(cocoa:…)` because AX and displays count y down.
     Accessibility is tied to the cdhash like BatteryBar's Bluetooth: after

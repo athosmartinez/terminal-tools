@@ -214,7 +214,7 @@ Limits:
   `tccutil reset Accessibility com.athosmartinez.terminal-tools.monitorbar`.
 - A moved window with a title bar fills the area below the menu bar, so the
   video is a little smaller than the display. The pointer still maps to the
-  whole remote screen. A borderless window of the display's size covers it 1:1.
+  whole remote screen. A borderless stream covers the virtual display 1:1.
 - The *Move* items move the main window of Moonlight, also when it shows the
   host list and not a stream.
 - The Mac still decodes the video that nobody watches; a lower bitrate in

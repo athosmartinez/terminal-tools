@@ -264,20 +264,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Moves the main window of every Moonlight that runs. `target` gets the
-    // current frame and gives the new one. One window that moved is a success.
-    private func moveMoonlight(_ target: (pid_t, CGRect) -> CGRect) throws {
+    // current frame and gives the new one, and `moved` runs after the window
+    // took it. A window that did not move is an error, also when another did.
+    private func moveMoonlight(_ target: (pid_t, CGRect) -> CGRect, moved: (pid_t) -> Void = { _ in }) throws {
         try AppWindow.requireAccess()
-        var moved = 0
-        var lastError: Error = DisplayToggleError(description: "Moonlight is not running")
-        for pid in moonlightPIDs {
+        let pids = moonlightPIDs
+        guard !pids.isEmpty else { throw DisplayToggleError(description: "Moonlight is not running") }
+        var failures: [Error] = []
+        for pid in pids {
             do {
                 try AppWindow.setFrame(pid: pid, target(pid, AppWindow.frame(pid: pid)))
-                moved += 1
+                moved(pid)
             } catch {
-                lastError = error
+                failures.append(error)
             }
         }
-        if moved == 0 { throw lastError }
+        guard let last = failures.last else { return }
+        throw DisplayToggleError(description: pids.count == 1
+            ? "\(last)" : "\(failures.count) of \(pids.count) Moonlight windows did not move: \(last)")
     }
 
     @objc private func moveMoonlightToVirtual() {
@@ -287,12 +291,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             let bounds = CGDisplayBounds(id)
             let visible = visibleFrame(of: id)
-            try moveMoonlight { pid, frame in
+            let displays = try DisplayToggle.displays(online: false).map { CGDisplayBounds($0.id) }
+            try moveMoonlight({ pid, frame in
+                let middle = CGPoint(x: frame.midX, y: frame.midY)
                 // The way back. A window that is on the virtual display
                 // already keeps the place that it came from.
-                if !bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) { moonlightHome[pid] = frame }
-                return Moonlight.frame(onVirtual: bounds, visible: visible, window: frame.size)
-            }
+                if !bounds.contains(middle) { moonlightHome[pid] = frame }
+                return Moonlight.frame(onVirtual: bounds, visible: visible, window: frame,
+                                       current: displays.first { $0.contains(middle) })
+            })
         } catch {
             showError(error)
         }
@@ -306,10 +313,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             let real = active.filter { !$0.isVirtual }.map { CGDisplayBounds($0.id) }
             let visible = visibleFrame(of: anchor)
-            try moveMoonlight { pid, frame in
-                Moonlight.frame(onReal: real, visible: visible, remembered: moonlightHome.removeValue(forKey: pid),
-                                window: frame.size)
-            }
+            // The remembered frame goes only after the window took it: a
+            // move that fails must keep the way back.
+            try moveMoonlight({ pid, frame in
+                Moonlight.frame(onReal: real, visible: visible, remembered: moonlightHome[pid], window: frame)
+            }, moved: { moonlightHome[$0] = nil })
         } catch {
             showError(error)
         }
