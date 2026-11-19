@@ -28,6 +28,11 @@ as hdmi_input=<n> (default 17, the MCCS value; Samsung monitors use 5).
 Refuses 'off' while the built-in display is inactive (lid closed), so the Mac
 is never left without a screen. While MonitorBar runs, plugging the cable back
 in also restores the display.
+
+MonitorBar can also add a virtual display (no screen) beside the monitor and
+open a Moonlight stream on it. Set moonlight_host=<host> in the same file;
+optional: moonlight_app=, virtual_size=1920x1080, virtual_side=right|left,
+virtual_y=<points>. 'off', 'on' and 'status' ignore the virtual display.
 EOF
 }
 
