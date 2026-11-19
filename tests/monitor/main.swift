@@ -100,15 +100,23 @@ check("anchor: the built-in panel, when there is no monitor", VirtualDisplay.anc
 check("anchor: never the virtual display itself", VirtualDisplay.anchor([virtual]), nil)
 
 let main = CGRect(x: 0, y: 0, width: 2560, height: 1440)
+let panelOnTheLeft = CGRect(x: -1710, y: 628, width: 1710, height: 1107)
 check("right of the anchor, top edges aligned",
-      VirtualDisplay.origin(anchor: main, width: 1920, side: .right, y: 0), CGPoint(x: 2560, y: 0))
+      VirtualDisplay.origin(anchor: main, real: [main, panelOnTheLeft], width: 1920, side: .right, y: 0),
+      CGPoint(x: 2560, y: 0))
 check("y moves it down",
-      VirtualDisplay.origin(anchor: main, width: 1920, side: .right, y: 360), CGPoint(x: 2560, y: 360))
-check("left of the anchor",
-      VirtualDisplay.origin(anchor: main, width: 1920, side: .left, y: 0), CGPoint(x: -1920, y: 0))
-check("an anchor that is not the main display",
-      VirtualDisplay.origin(anchor: CGRect(x: -1710, y: 628, width: 1710, height: 1107), width: 1920, side: .right, y: 10),
-      CGPoint(x: 0, y: 638))
+      VirtualDisplay.origin(anchor: main, real: [main, panelOnTheLeft], width: 1920, side: .right, y: 360),
+      CGPoint(x: 2560, y: 360))
+check("left of the anchor, with no display there",
+      VirtualDisplay.origin(anchor: main, real: [main], width: 1920, side: .left, y: 0), CGPoint(x: -1920, y: 0))
+check("left: past a display that is already on that side",
+      VirtualDisplay.origin(anchor: main, real: [main, panelOnTheLeft], width: 1920, side: .left, y: 0),
+      CGPoint(x: -3630, y: 0))
+check("right: past a display that is already on that side, y still from the anchor",
+      VirtualDisplay.origin(anchor: CGRect(x: -2560, y: -200, width: 2560, height: 1440),
+                            real: [CGRect(x: 0, y: 0, width: 1710, height: 1107), CGRect(x: -2560, y: -200, width: 2560, height: 1440)],
+                            width: 1920, side: .right, y: 10),
+      CGPoint(x: 1710, y: -190))
 check("physical size of 1920x1080 is a 24-inch panel",
       VirtualDisplay.millimeters(width: 1920, height: 1080), CGSize(width: 530, height: 298))
 

@@ -109,8 +109,10 @@ other people and holds nothing private:
     moment later. The app runs `place` 1 s after the toggle, after every
     reconfiguration with an add/remove/enable/disable flag, and after wake.
     `place` is idempotent and its own move raises only "moved" flags, so it
-    cannot loop. Anchor = the external monitor, else the built-in panel; with
-    no real display active `place` turns the virtual display off.
+    cannot loop. Anchor = the external monitor, else the built-in panel; it
+    gives y, and x is past every real display on that side, so the virtual
+    display never lands on one. With no real display active `place` turns the
+    virtual display off.
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and
     `createsNewApplicationInstance` (a child `Process` would run under
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the
