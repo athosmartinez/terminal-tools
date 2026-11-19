@@ -212,7 +212,7 @@ struct MonitorConfig: Equatable {
             case "virtual_side":
                 if let side = Side(rawValue: value.lowercased()) { config.virtualSide = side }
             case "virtual_y":
-                if let y = Int(value), abs(y) <= 10_000 { config.virtualY = y }
+                if let y = Int(value), (-10_000...10_000).contains(y) { config.virtualY = y }
             case "moonlight_host":
                 config.moonlightHost = value
             case "moonlight_app":
