@@ -165,7 +165,7 @@ one), so switching *back* to the Mac stays a manual step on those.
 **A virtual display for a Moonlight stream (macOS).** MonitorBar can add a
 display that has no screen: macOS extends the desktop onto it, and nothing shows
 it. *Turn On Virtual Display* creates it beside the external monitor (beside the
-built-in panel when there is no monitor), and *Open Moonlight on Virtual Display*
+built-in panel when there is no monitor), past any other display on that side, and *Open Moonlight on Virtual Display*
 starts a borderless stream that covers it. Move the pointer past that edge of the
 monitor and it enters the stream and controls the remote machine, while you look
 at that machine's own screen. Moonlight's absolute mouse mode does not capture

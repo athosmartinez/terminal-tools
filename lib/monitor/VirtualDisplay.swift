@@ -99,7 +99,8 @@ final class VirtualDisplay {
             throw DisplayToggleError(description: "no real display is active — virtual display turned off")
         }
         let bounds = CGDisplayBounds(id)
-        let wanted = Self.origin(anchor: CGDisplayBounds(anchor), width: bounds.width,
+        let real = active.filter { !$0.isVirtual }.map { CGDisplayBounds($0.id) }
+        let wanted = Self.origin(anchor: CGDisplayBounds(anchor), real: real, width: bounds.width,
                                  side: config.virtualSide, y: config.virtualY)
         guard bounds.origin != wanted else { return }
 
@@ -126,9 +127,14 @@ final class VirtualDisplay {
         (active.first(where: \.isExternal) ?? active.first(where: \.builtin))?.id
     }
 
-    /// Global display coordinates: x grows to the right and y grows down.
-    static func origin(anchor: CGRect, width: CGFloat, side: MonitorConfig.Side, y: Int) -> CGPoint {
-        CGPoint(x: side == .right ? anchor.maxX : anchor.minX - width, y: anchor.minY + CGFloat(y))
+    /// Global display coordinates: x grows to the right and y grows down. The
+    /// anchor gives y. Every real display gives x: the place beside the anchor
+    /// can hold another display, and the virtual one must not land on it.
+    static func origin(anchor: CGRect, real: [CGRect], width: CGFloat, side: MonitorConfig.Side, y: Int) -> CGPoint {
+        let x = side == .right
+            ? real.reduce(anchor.maxX) { max($0, $1.maxX) }
+            : real.reduce(anchor.minX) { min($0, $1.minX) } - width
+        return CGPoint(x: x, y: anchor.minY + CGFloat(y))
     }
 
     // macOS uses the physical size only to choose a default scale. 92 pixels
