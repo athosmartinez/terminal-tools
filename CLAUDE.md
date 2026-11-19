@@ -118,8 +118,19 @@ other people and holds nothing private:
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the
     first window; the stream window opens on that window's display. The Qt
     syntax has no negative coordinates, so `virtual_side=left` gets no
-    geometry — the TODO in `Moonlight.windowGeometry` names the Accessibility
-    fallback.
+    geometry.
+  - A Moonlight that already runs is not started again: the menu shows *Move
+    Moonlight to Virtual Display* / *to Main Display*, which move its main
+    window with the Accessibility API (`AppWindow`: `kAXPosition`/`kAXSize`,
+    size-position-size). The frame before the move is kept per pid in the app
+    (`moonlightHome`) for the way back. The target frames are pure
+    (`Moonlight.frame(onVirtual:…)`, `frame(onReal:…)`); AppKit rectangles go
+    through `Moonlight.global(cocoa:…)` because AX and displays count y down.
+    Accessibility is tied to the cdhash like BatteryBar's Bluetooth: after
+    `monitor app` the entry stays in the list but is ignored — remove and add
+    it, or `tccutil reset Accessibility
+    com.athosmartinez.terminal-tools.monitorbar`. Moving the window acts on
+    the owner's live stream — let the owner run it.
   - Config keys in `monitor.conf` (`MonitorConfig` in `DisplayToggle.swift`):
     `virtual_size=`, `virtual_side=`, `virtual_y=`, `moonlight_host=` (no
     default: it names a machine, so it never goes in the repo),

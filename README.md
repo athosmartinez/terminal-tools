@@ -166,7 +166,10 @@ one), so switching *back* to the Mac stays a manual step on those.
 display that has no screen: macOS extends the desktop onto it, and nothing shows
 it. *Turn On Virtual Display* creates it beside the external monitor (beside the
 built-in panel when there is no monitor), past any other display on that side, and *Open Moonlight on Virtual Display*
-starts a borderless stream that covers it. Move the pointer past that edge of the
+starts a borderless stream that covers it. When Moonlight already runs, the menu
+has *Move Moonlight to Virtual Display* instead: the open window moves there and
+the stream stays connected. *Move Moonlight to Main Display* puts the window back
+where it was. Move the pointer past that edge of the
 monitor and it enters the stream and controls the remote machine, while you look
 at that machine's own screen. Moonlight's absolute mouse mode does not capture
 the pointer, so moving back out returns it to the Mac. The keyboard goes to the
@@ -200,10 +203,20 @@ Limits:
   without them, the menu says so and the rest of MonitorBar works.
 - Windows, the Dock and the menu bar can land on a display you cannot see. Turn
   it off to get them back.
-- The stream opens in a new Moonlight instance, placed with Qt's
-  `-qwindowgeometry +x+y`. That option cannot name a negative coordinate, so
-  with `virtual_side=left` (or a display above the main one) Moonlight opens
-  where it was last, not on the virtual display.
+- A new stream is placed with Qt's `-qwindowgeometry +x+y`. That option cannot
+  name a negative coordinate, so with `virtual_side=left` (or a display above the
+  main one) Moonlight opens where it was last. Use *Move Moonlight to Virtual
+  Display* then.
+- The two *Move* items need the Accessibility permission (System Settings >
+  Privacy & Security > Accessibility); macOS asks on the first use. The grant
+  belongs to one build: after `monitor app`, remove MonitorBar from that list and
+  add it again, or run
+  `tccutil reset Accessibility com.athosmartinez.terminal-tools.monitorbar`.
+- A moved window with a title bar fills the area below the menu bar, so the
+  video is a little smaller than the display. The pointer still maps to the
+  whole remote screen. A borderless window of the display's size covers it 1:1.
+- The *Move* items move the main window of Moonlight, also when it shows the
+  host list and not a stream.
 - The Mac still decodes the video that nobody watches; a lower bitrate in
   Moonlight saves battery.
 
