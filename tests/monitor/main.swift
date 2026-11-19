@@ -137,6 +137,38 @@ check("without a geometry the command has no Qt option",
       (try? Moonlight.arguments(config, display: CGRect(x: -1920, y: 0, width: 1920, height: 1080)))?.last,
       "--absolute-mouse")
 
+// MARK: a Moonlight window that is already open
+
+let virtualBounds = CGRect(x: 2560, y: 0, width: 1920, height: 1080)
+let virtualVisible = CGRect(x: 2560, y: 25, width: 1920, height: 1055)
+check("a window of the display's size covers the display",
+      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: CGSize(width: 1920, height: 1080)),
+      virtualBounds)
+check("any other window fills the area below the menu bar",
+      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: CGSize(width: 1280, height: 748)),
+      virtualVisible)
+
+let mainVisible = CGRect(x: 0, y: 25, width: 2560, height: 1415)
+let home = CGRect(x: 300, y: 200, width: 1280, height: 748)
+check("back: the frame from before the move",
+      Moonlight.frame(onReal: [main, panelOnTheLeft], visible: mainVisible, remembered: home,
+                      window: CGSize(width: 1920, height: 1055)), home)
+check("back: no remembered frame is the middle of the real display, same size",
+      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: nil, window: CGSize(width: 1280, height: 748)),
+      CGRect(x: 640, y: 358.5, width: 1280, height: 748))
+check("back: a remembered frame on a display that is gone is not used, and the window shrinks to fit",
+      Moonlight.frame(onReal: [panelOnTheLeft], visible: CGRect(x: -1710, y: 653, width: 1710, height: 1082),
+                      remembered: home, window: CGSize(width: 1920, height: 1080)),
+      CGRect(x: -1710, y: 654, width: 1710, height: 1080))
+check("back: a remembered frame on the virtual display is not used",
+      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: virtualBounds, window: CGSize(width: 800, height: 600)),
+      CGRect(x: 880, y: 432.5, width: 800, height: 600))
+
+check("AppKit to global: the primary screen below its menu bar",
+      Moonlight.global(cocoa: CGRect(x: 0, y: 0, width: 2560, height: 1415), primaryHeight: 1440), mainVisible)
+check("AppKit to global: a screen on the right, top edges aligned",
+      Moonlight.global(cocoa: CGRect(x: 2560, y: 360, width: 1920, height: 1055), primaryHeight: 1440), virtualVisible)
+
 // MARK: the private classes
 
 // Builds the request only; no CGVirtualDisplay is made, so no display appears.

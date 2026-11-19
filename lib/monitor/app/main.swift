@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastWake: Date?
     private let virtual = VirtualDisplay()
     private var pendingPlacement: DispatchWorkItem?
+    // Where each Moonlight window was before it went to the virtual display.
+    private var moonlightHome: [pid_t: CGRect] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -196,12 +198,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = "Virtual display: \(Int(bounds.width))x\(Int(bounds.height)) at \(Int(bounds.minX)), \(Int(bounds.minY))"
         menu.addItem(withTitle: header, action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(withTitle: "Turn Off Virtual Display", action: #selector(toggleVirtual), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Open Moonlight on Virtual Display", action: #selector(openMoonlight), keyEquivalent: "").target = self
+        // A Moonlight that runs keeps its stream, and its window moves. With
+        // no Moonlight, the item starts a stream on the display.
+        if moonlightPIDs.isEmpty {
+            menu.addItem(withTitle: "Open Moonlight on Virtual Display", action: #selector(openMoonlight), keyEquivalent: "").target = self
+        } else {
+            menu.addItem(withTitle: "Move Moonlight to Virtual Display", action: #selector(moveMoonlightToVirtual), keyEquivalent: "").target = self
+            menu.addItem(withTitle: "Move Moonlight to Main Display", action: #selector(moveMoonlightToMain), keyEquivalent: "").target = self
+        }
     }
 
     @objc private func toggleVirtual() {
         if virtual.isOn {
             virtual.turnOff()
+            // macOS moves the windows back by itself, to places of its choice.
+            moonlightHome.removeAll()
             return
         }
         do {
@@ -231,6 +242,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] _, error in
                 guard let error else { return }
                 DispatchQueue.main.async { self?.showError(error) }
+            }
+        } catch {
+            showError(error)
+        }
+    }
+
+    private var moonlightPIDs: [pid_t] {
+        NSRunningApplication.runningApplications(withBundleIdentifier: Moonlight.bundleID).map(\.processIdentifier)
+    }
+
+    // The area of a display that the menu bar and the Dock leave, in global
+    // coordinates. NSScreen has it; a display with no NSScreen yet gives its bounds.
+    private func visibleFrame(of id: CGDirectDisplayID) -> CGRect {
+        let number = NSDeviceDescriptionKey("NSScreenNumber")
+        guard let primary = NSScreen.screens.first,
+              let screen = NSScreen.screens.first(where: { ($0.deviceDescription[number] as? NSNumber)?.uint32Value == id }) else {
+            return CGDisplayBounds(id)
+        }
+        return Moonlight.global(cocoa: screen.visibleFrame, primaryHeight: primary.frame.height)
+    }
+
+    // Moves the main window of every Moonlight that runs. `target` gets the
+    // current frame and gives the new one. One window that moved is a success.
+    private func moveMoonlight(_ target: (pid_t, CGRect) -> CGRect) throws {
+        try AppWindow.requireAccess()
+        var moved = 0
+        var lastError: Error = DisplayToggleError(description: "Moonlight is not running")
+        for pid in moonlightPIDs {
+            do {
+                try AppWindow.setFrame(pid: pid, target(pid, AppWindow.frame(pid: pid)))
+                moved += 1
+            } catch {
+                lastError = error
+            }
+        }
+        if moved == 0 { throw lastError }
+    }
+
+    @objc private func moveMoonlightToVirtual() {
+        do {
+            guard virtual.isOn, let id = virtual.displayID else {
+                throw DisplayToggleError(description: "the virtual display is off")
+            }
+            let bounds = CGDisplayBounds(id)
+            let visible = visibleFrame(of: id)
+            try moveMoonlight { pid, frame in
+                // The way back. A window that is on the virtual display
+                // already keeps the place that it came from.
+                if !bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) { moonlightHome[pid] = frame }
+                return Moonlight.frame(onVirtual: bounds, visible: visible, window: frame.size)
+            }
+        } catch {
+            showError(error)
+        }
+    }
+
+    @objc private func moveMoonlightToMain() {
+        do {
+            let active = try DisplayToggle.displays(online: false)
+            guard let anchor = VirtualDisplay.anchor(active) else {
+                throw DisplayToggleError(description: "no real display is active")
+            }
+            let real = active.filter { !$0.isVirtual }.map { CGDisplayBounds($0.id) }
+            let visible = visibleFrame(of: anchor)
+            try moveMoonlight { pid, frame in
+                Moonlight.frame(onReal: real, visible: visible, remembered: moonlightHome.removeValue(forKey: pid),
+                                window: frame.size)
             }
         } catch {
             showError(error)
