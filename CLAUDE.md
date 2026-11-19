@@ -85,6 +85,45 @@ other people and holds nothing private:
   switching back is manual). Every `lib/monitor/*.swift` is core; the wrapper
   compiles all of them with the CLI or app `main.swift`. DDC reads from this
   monitor are unreliable — verify writes by looking at the screen.
+  Virtual display (`VirtualDisplay.swift`, menu items *Turn On/Off Virtual
+  Display* and *Open Moonlight on Virtual Display*): a display with no screen,
+  so a borderless Moonlight stream on it turns "pointer past the monitor's
+  edge" into control of the remote machine. Gotchas:
+  - `CGVirtualDisplay*` are private classes with no header. Classes come from
+    `NSClassFromString`; properties are set with key-value coding (it converts
+    to the property's integer width) after `responds(to:)`, because an unknown
+    key raises an exception that Swift cannot catch; the two inits with
+    arguments and `applySettings:` go through the method IMP, after a check of
+    the type encoding. `alloc`/`init` use raw pointers: an init consumes self
+    and can return nil, which ARC gets wrong for a C function pointer.
+  - The display lives while the `CGVirtualDisplay` object lives, so the app
+    owns it; the CLI compiles the file but never makes one.
+    `applicationWillTerminate` releases it (`pkill` skips that, and the display
+    still dies with the process).
+  - `DisplayInfo.isExternal` is "not built in and not virtual" (the fixed
+    `vendorID`/`productID`, read with `CGDisplayVendorNumber` /
+    `CGDisplayModelNumber`). `state`, `turnOff`, `turnOn` and the cable restore
+    all use it; without it the virtual display reads as an external monitor
+    that is on. The vendor is not a valid EDID code, so no monitor has it.
+  - Placement is not done in `turnOn`: WindowServer lists the new display a
+    moment later. The app runs `place` 1 s after the toggle, after every
+    reconfiguration with an add/remove/enable/disable flag, and after wake.
+    `place` is idempotent and its own move raises only "moved" flags, so it
+    cannot loop. Anchor = the external monitor, else the built-in panel; with
+    no real display active `place` turns the virtual display off.
+  - Moonlight starts through `NSWorkspace.openApplication` with arguments and
+    `createsNewApplicationInstance` (a child `Process` would run under
+    MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the
+    first window; the stream window opens on that window's display. The Qt
+    syntax has no negative coordinates, so `virtual_side=left` gets no
+    geometry — the TODO in `Moonlight.windowGeometry` names the Accessibility
+    fallback.
+  - Config keys in `monitor.conf` (`MonitorConfig` in `DisplayToggle.swift`):
+    `virtual_size=`, `virtual_side=`, `virtual_y=`, `moonlight_host=` (no
+    default: it names a machine, so it never goes in the repo),
+    `moonlight_app=`.
+  - Turning the virtual display on moves windows and changes the owner's
+    arrangement — let the owner run it, like `off`.
 - `monitor-linux` — the Linux (Hyprland) `monitor`, plain bash + `jq`; shares
   no code with the macOS one. `install.sh` links `~/.local/bin/monitor` to it on
   Linux. Hyprland here uses the Lua config, so `hyprctl keyword` is rejected:
@@ -261,6 +300,12 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 - `battery`: `bash tests/battery.test.sh` compiles `lib/battery/Battery.swift`
   with `tests/battery/main.swift` (no Bluetooth, fake devices). The real check
   is `./battery` on a Mac with devices connected.
+- `monitor` (macOS): `bash tests/monitor.test.sh` compiles `lib/monitor/*.swift`
+  with `tests/monitor/main.swift` and runs the pure rules on fake `DisplayInfo`
+  values: config, external filter, placement, Moonlight arguments. It also
+  builds the `CGVirtualDisplay` descriptor and settings (plain objects), which
+  shows a macOS update that changed the private classes. It never makes a
+  `CGVirtualDisplay`, so no display appears — keep it that way.
 - `monitor-linux`: `bash tests/monitor-linux.test.sh` — a fake `hyprctl` on
   `PATH` serves fixture JSON and logs the calls, so no test touches a display;
   `MONITOR_LID_DIR` points at a fake lid (open by default) — never let a test
@@ -287,8 +332,9 @@ lib/kubetui.zsh            shared core (feeds helpers, follow engine, previews)
 lib/kube-actions.zsh       kube action registry + menu + run_action
 lib/kube-data.zsh          kube per-view feeds + metrics join
 monitor                    entry point (zsh wrapper, macOS) → lib/monitor/
-lib/monitor/DisplayToggle.swift  display off/on core (private CoreGraphics call)
+lib/monitor/DisplayToggle.swift  display off/on core (private CoreGraphics call) + monitor.conf
 lib/monitor/DDC.swift            input switch over DDC/CI (private IOAVService)
+lib/monitor/VirtualDisplay.swift virtual display (private CGVirtualDisplay) + Moonlight command
 lib/monitor/cli/main.swift       `monitor on|off|status`
 lib/monitor/app/main.swift       MonitorBar menu bar app (`monitor app`)
 lib/monitor/app/AppIcon.png      app icon, 1024 px; `monitor app` makes the .icns
@@ -304,6 +350,7 @@ lib/battery/cli/main.swift `battery [status] [-a]`
 lib/battery/app/main.swift BatteryBar menu bar app (`battery app`)
 lib/battery/app/AppIcon.png  app icon, 1024 px; AppIcon.swift draws it
 tests/monitor-linux.test.sh
+tests/monitor.test.sh      + tests/monitor/main.swift (macOS rules, fake displays)
 tests/battery.test.sh      + tests/battery/main.swift
 install.sh                 symlinks the 6 entry points into ~/.local/bin (bash)
 ```

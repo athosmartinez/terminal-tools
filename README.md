@@ -26,7 +26,7 @@ repo.
 | **`kube`** | A Kubernetes cockpit: problems on top, then every workload / pod / node / ingress / secret / IP, with live metrics, contextual actions (restart, scale, exec, port-forward, logs…) and auto-refresh. A lightweight, keyboard-first take on `k9s`. |
 | **`logs`** | Follow logs of any workload — Deployments, StatefulSets, DaemonSets and standalone Jobs — across all namespaces — one color per pod, auto-reconnect on restarts. |
 | **`ports`** | View and kill processes listening on TCP ports, with a confirm step. |
-| **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login). On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
+| **`monitor`** | No TUI: turn the external display off/on without unplugging it — a USB-C monitor keeps charging the Mac while showing nothing. Also ships **MonitorBar**, a one-click menu bar toggle (no Dock icon, starts at login), which can also add a virtual display and open a [Moonlight](https://moonlight-stream.org) stream on it. On Linux (Hyprland), `monitor-linux` does the same and adds a 15-second pause, with an Omarchy bar widget. |
 | **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
 | **`battery`** | No TUI (macOS): the battery of every connected Bluetooth device that has the standard GATT Battery Service, read from the device itself — so it also works for BLE keyboards that macOS shows no battery for. Ships **BatteryBar**, a menu bar item with short labels stacked in two lines (`KB 100%` over `MS 85%`) and a warning mark when one runs low. |
 | **`gh-shim`** | No TUI: a wrapper installed as `gh`. With several GitHub accounts logged in to `gh`, it runs each command as the account that git uses for the current repository, instead of the one active account. |
@@ -161,6 +161,51 @@ hdmi_input=5
 Find the number with `monitor input <n>` while watching the screen. Some
 monitors expose no DDC value for their USB-C input (the Samsung S27A600U is
 one), so switching *back* to the Mac stays a manual step on those.
+
+**A virtual display for a Moonlight stream (macOS).** MonitorBar can add a
+display that has no screen: macOS extends the desktop onto it, and nothing shows
+it. *Turn On Virtual Display* creates it beside the external monitor (beside the
+built-in panel when there is no monitor), and *Open Moonlight on Virtual Display*
+starts a borderless stream that covers it. Move the pointer past that edge of the
+monitor and it enters the stream and controls the remote machine, while you look
+at that machine's own screen. Moonlight's absolute mouse mode does not capture
+the pointer, so moving back out returns it to the Mac. The keyboard goes to the
+machine whose window has the focus: click once inside the stream.
+
+The menu shows the display's size and position, because you cannot see it. The
+display lives inside MonitorBar: quitting the app, or *Turn Off Virtual Display*,
+removes it, and macOS moves its windows back. It never stays as the only
+display: when no real display is active, MonitorBar removes it. `monitor off`,
+`on` and `status` ignore it. Settings, in `~/.config/terminal-tools/monitor.conf`:
+
+```ini
+# Required for the Moonlight item: a host that is already paired in Moonlight.
+moonlight_host=my-linux-box
+# The app to stream. Default: Desktop, the one Sunshine defines.
+moonlight_app=Desktop
+# Default 1920x1080. It is also the stream resolution.
+virtual_size=1920x1080
+# right (default) or left of the monitor.
+virtual_side=right
+# Points below the monitor's top edge; a negative value is above. Default 0.
+virtual_y=0
+```
+
+A comment goes on its own line: the text after `=` is the value, to the end of
+the line.
+
+Limits:
+
+- It uses the private `CGVirtualDisplay` classes, found at run time. On a macOS
+  without them, the menu says so and the rest of MonitorBar works.
+- Windows, the Dock and the menu bar can land on a display you cannot see. Turn
+  it off to get them back.
+- The stream opens in a new Moonlight instance, placed with Qt's
+  `-qwindowgeometry +x+y`. That option cannot name a negative coordinate, so
+  with `virtual_side=left` (or a display above the main one) Moonlight opens
+  where it was last, not on the virtual display.
+- The Mac still decodes the video that nobody watches; a lower bitrate in
+  Moonlight saves battery.
 
 On Linux, `install.sh` links `monitor` to `monitor-linux`, a bash script for
 Hyprland. `off` disables every external output
