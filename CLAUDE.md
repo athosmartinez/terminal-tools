@@ -122,7 +122,10 @@ other people and holds nothing private:
   - A Moonlight that already runs is not started again: the menu shows *Move
     Moonlight to Virtual Display* / *to Main Display*, which move its main
     window with the Accessibility API (`AppWindow`: `kAXPosition`/`kAXSize`,
-    size-position-size). The frame before the move is kept per pid in the app
+    size-position-size). Moonlight's borderless stream is a native full
+    screen window (`AXFullScreen` = 1), which refuses a position (AXError
+    -25200): `setFrame` sets `AXFullScreen` to false, waits until the position
+    is settable, moves, and sets it to true again on the new display. The frame before the move is kept per pid in the app
     (`moonlightHome`) for the way back, and dropped only after the window
     took it. A window that covers its current display is a borderless stream
     and covers the virtual one; a titled window fills the visible area. A

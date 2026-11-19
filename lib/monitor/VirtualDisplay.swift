@@ -333,6 +333,11 @@ enum AppWindow {
         guard let position = AXValueCreate(.cgPoint, &origin), let extent = AXValueCreate(.cgSize, &size) else {
             throw DisplayToggleError(description: "cannot build the window frame")
         }
+        // A window in native full screen has a Space of its own and refuses a
+        // position. It leaves full screen, moves, and enters full screen again
+        // on the display where it is then.
+        let wasFullScreen = isFullScreen(window)
+        if wasFullScreen { try leaveFullScreen(window) }
         // Size, position, size: macOS cuts a window that grows past the edge of
         // its current display, so the size is set again on the new display. A
         // window of fixed size refuses the size, and that is not an error.
@@ -342,6 +347,32 @@ enum AppWindow {
             throw DisplayToggleError(description: "cannot move the window (AXError \(err.rawValue))")
         }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
+        if wasFullScreen {
+            _ = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanTrue)
+        }
+    }
+
+    // AppKit has no constant for it.
+    private static let fullScreenAttribute = "AXFullScreen"
+
+    private static func isFullScreen(_ window: AXUIElement) -> Bool {
+        (copy(window, fullScreenAttribute) as? NSNumber)?.boolValue ?? false
+    }
+
+    // Leaving full screen is an animation: the call returns at once, and the
+    // window takes a position only when the animation ends.
+    private static func leaveFullScreen(_ window: AXUIElement) throws {
+        let err = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanFalse)
+        guard err == .success else {
+            throw DisplayToggleError(description: "cannot take the window out of full screen (AXError \(err.rawValue))")
+        }
+        for _ in 0..<50 {
+            usleep(100_000)
+            var settable: DarwinBoolean = false
+            _ = AXUIElementIsAttributeSettable(window, kAXPositionAttribute as CFString, &settable)
+            if !isFullScreen(window), settable.boolValue { return }
+        }
+        throw DisplayToggleError(description: "the window did not leave full screen")
     }
 
     private static func mainWindow(_ pid: pid_t) throws -> AXUIElement {
