@@ -1,4 +1,5 @@
-// app/main.swift — MonitorBar, a menu bar toggle for the external display.
+// app/main.swift — MonitorBar, a menu bar toggle for the external display and
+// the owner of the virtual display.
 // Agent app (LSUIElement): no Dock icon, no Cmd-Tab entry, only the status item.
 // Built into ~/Applications/MonitorBar.app by `monitor app`.
 
@@ -15,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var cablePort: IONotificationPortRef?
     private var pendingRestore: DispatchWorkItem?
     private var lastWake: Date?
+    private let virtual = VirtualDisplay()
+    private var pendingPlacement: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -27,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         CGDisplayRegisterReconfigurationCallback({ _, flags, context in
             guard !flags.contains(.beginConfigurationFlag), let context else { return }
             let delegate = Unmanaged<AppDelegate>.fromOpaque(context).takeUnretainedValue()
-            DispatchQueue.main.async { delegate.refreshIcon() }
+            DispatchQueue.main.async { delegate.displaysChanged(flags) }
         }, Unmanaged.passUnretained(self).toOpaque())
 
         watchCable()
@@ -38,7 +41,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    @objc private func noteWake() { lastWake = Date() }
+    // The virtual display lives in this process, so it must go with it.
+    func applicationWillTerminate(_ notification: Notification) { virtual.turnOff() }
+
+    // The arrangement can change over a sleep with no display added or removed.
+    @objc private func noteWake() {
+        lastWake = Date()
+        schedulePlacement()
+    }
+
+    // The anchor of the virtual display can appear or go (cable, `monitor
+    // off`, lid). Moving the display raises only "moved" flags, so a placement
+    // cannot schedule the next one.
+    private func displaysChanged(_ flags: CGDisplayChangeSummaryFlags) {
+        refreshIcon()
+        if !flags.isDisjoint(with: [.addFlag, .removeFlag, .enabledFlag, .disabledFlag]) { schedulePlacement() }
+    }
+
+    // One attempt after the last event: a change of displays arrives as a
+    // burst of callbacks, and WindowServer lists a new display a moment late.
+    private func schedulePlacement() {
+        guard virtual.displayID != nil else { return }
+        pendingPlacement?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.placeVirtual() }
+        pendingPlacement = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    // Silent like the cable restore: it also runs with nobody at the menu.
+    private func placeVirtual() {
+        do {
+            try virtual.place(MonitorConfig.load())
+        } catch {
+            log.error("virtual display: \(String(describing: error), privacy: .public)")
+        }
+    }
 
     // macOS creates this service when a USB-C port enters DisplayPort mode, so
     // a plain charger never fires it. The display callback cannot replace it: a
@@ -135,10 +172,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        addVirtualItems(to: menu)
+
+        menu.addItem(.separator())
         let login = menu.addItem(withTitle: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(withTitle: "Quit MonitorBar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    }
+
+    private func addVirtualItems(to menu: NSMenu) {
+        guard VirtualDisplay.isAvailable else {
+            menu.addItem(withTitle: "Virtual display: not available on this macOS", action: nil, keyEquivalent: "").isEnabled = false
+            return
+        }
+        guard virtual.isOn, let id = virtual.displayID else {
+            menu.addItem(withTitle: "Virtual display: off", action: nil, keyEquivalent: "").isEnabled = false
+            menu.addItem(withTitle: "Turn On Virtual Display", action: #selector(toggleVirtual), keyEquivalent: "").target = self
+            return
+        }
+        // Nothing shows this display, so the menu says where it is.
+        let bounds = CGDisplayBounds(id)
+        let header = "Virtual display: \(Int(bounds.width))x\(Int(bounds.height)) at \(Int(bounds.minX)), \(Int(bounds.minY))"
+        menu.addItem(withTitle: header, action: nil, keyEquivalent: "").isEnabled = false
+        menu.addItem(withTitle: "Turn Off Virtual Display", action: #selector(toggleVirtual), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Open Moonlight on Virtual Display", action: #selector(openMoonlight), keyEquivalent: "").target = self
+    }
+
+    @objc private func toggleVirtual() {
+        if virtual.isOn {
+            virtual.turnOff()
+            return
+        }
+        do {
+            try virtual.turnOn(MonitorConfig.load())
+            schedulePlacement()
+        } catch {
+            showError(error)
+        }
+    }
+
+    // Through LaunchServices, not as a child process: a child would use
+    // MonitorBar's privacy permissions (local network, input) in place of
+    // Moonlight's own. A new instance, because a Moonlight that already runs
+    // would only come to the front and drop the arguments.
+    @objc private func openMoonlight() {
+        do {
+            guard virtual.isOn, let id = virtual.displayID else {
+                throw DisplayToggleError(description: "the virtual display is off")
+            }
+            let arguments = try Moonlight.arguments(MonitorConfig.load(), display: CGDisplayBounds(id))
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Moonlight.bundleID) else {
+                throw DisplayToggleError(description: "Moonlight is not installed")
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.arguments = arguments
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] _, error in
+                guard let error else { return }
+                DispatchQueue.main.async { self?.showError(error) }
+            }
+        } catch {
+            showError(error)
+        }
     }
 
     @objc private func toggleDisplay() {
