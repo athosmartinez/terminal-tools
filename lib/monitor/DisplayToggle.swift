@@ -42,7 +42,11 @@ enum DisplayToggle {
         .appendingPathComponent(".config/terminal-tools/monitor-disabled")
 
     static func state() -> DisplayState {
-        guard let active = try? displays(online: false), let online = try? displays(online: true) else { return .absent }
+        guard let active = try? displays(online: false) else { return .absent }
+        // The online list only matters for a monitor that is off.
+        guard let online = try? displays(online: true) else {
+            return active.contains(where: \.isExternal) ? .on : .absent
+        }
         return state(active: active, online: online, remembered: loadDisabled())
     }
 
