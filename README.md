@@ -212,11 +212,13 @@ Limits:
   belongs to one build: after `monitor app`, remove MonitorBar from that list and
   add it again, or run
   `tccutil reset Accessibility com.athosmartinez.terminal-tools.monitorbar`.
-- A stream in full screen leaves full screen, moves, and enters full screen
-  again on the other display; the stream stays connected.
-- A moved window with a title bar fills the area below the menu bar, so the
-  video is a little smaller than the display. The pointer still maps to the
-  whole remote screen. A borderless stream covers the virtual display 1:1.
+- On the virtual display the Moonlight window is always put in full screen, so
+  the video covers the display and the pointer maps 1:1. *Move Moonlight to Main
+  Display* puts it back as it was: the same place, and a window again if it was
+  a window. The stream stays connected. A move takes 1 to 3 seconds: a window
+  leaves full screen, moves, and enters full screen again.
+- When a move does nothing, the steps are in the log:
+  `/usr/bin/log show --last 5m --predicate 'subsystem == "com.athosmartinez.terminal-tools.monitorbar"'`.
 - The *Move* items move the main window of Moonlight, also when it shows the
   host list and not a stream.
 - The Mac still decodes the video that nobody watches; a lower bitrate in

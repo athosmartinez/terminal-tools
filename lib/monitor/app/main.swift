@@ -18,8 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastWake: Date?
     private let virtual = VirtualDisplay()
     private var pendingPlacement: DispatchWorkItem?
-    // Where each Moonlight window was before it went to the virtual display.
-    private var moonlightHome: [pid_t: CGRect] = [:]
+    // Where each Moonlight window was before it went to the virtual display,
+    // and if it was in full screen there.
+    private var moonlightHome: [pid_t: (frame: CGRect, fullScreen: Bool)] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -264,18 +265,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Moves the main window of every Moonlight that runs. `target` gets the
-    // current frame and gives the new one, and `moved` runs after the window
-    // took it. A window that did not move is an error, also when another did.
-    private func moveMoonlight(_ target: (pid_t, CGRect) -> CGRect, moved: (pid_t) -> Void = { _ in }) throws {
+    // current frame and gives the new one, with the full screen state at the
+    // end (nil keeps it). `moved` runs after the window took the frame.
+    // `arrived` says if the frame that the window has afterwards is on the
+    // wanted display: Moonlight can refuse the move with no error. A window
+    // that did not move is an error, also when another did.
+    private func moveMoonlight(_ target: (pid_t, CGRect) throws -> (frame: CGRect, fullScreen: Bool?),
+                               arrived: (CGRect) -> Bool, moved: (pid_t) -> Void = { _ in }) throws {
         try AppWindow.requireAccess()
         let pids = moonlightPIDs
         guard !pids.isEmpty else { throw DisplayToggleError(description: "Moonlight is not running") }
         var failures: [Error] = []
         for pid in pids {
             do {
-                try AppWindow.setFrame(pid: pid, target(pid, AppWindow.frame(pid: pid)))
+                let goal = try target(pid, AppWindow.frame(pid: pid))
+                let result = try AppWindow.setFrame(pid: pid, goal.frame, fullScreen: goal.fullScreen) { step in
+                    log.notice("moonlight \(pid, privacy: .public): \(step, privacy: .public)")
+                }
+                guard arrived(result) else {
+                    throw DisplayToggleError(description: "Moonlight kept its window at \(Int(result.minX)), \(Int(result.minY))")
+                }
                 moved(pid)
             } catch {
+                log.error("moonlight \(pid, privacy: .public): \(String(describing: error), privacy: .public)")
                 failures.append(error)
             }
         }
@@ -296,10 +308,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let middle = CGPoint(x: frame.midX, y: frame.midY)
                 // The way back. A window that is on the virtual display
                 // already keeps the place that it came from.
-                if !bounds.contains(middle) { moonlightHome[pid] = frame }
-                return Moonlight.frame(onVirtual: bounds, visible: visible, window: frame,
-                                       current: displays.first { $0.contains(middle) })
-            })
+                if !bounds.contains(middle) {
+                    moonlightHome[pid] = (frame, try AppWindow.isFullScreen(pid: pid))
+                }
+                // Full screen on a display that nobody sees costs nothing, and
+                // only then the video covers the display, so the pointer maps
+                // to the remote screen with no dead border.
+                return (Moonlight.frame(onVirtual: bounds, visible: visible, window: frame,
+                                        current: displays.first { $0.contains(middle) }), true)
+            }, arrived: { bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) })
         } catch {
             showError(error)
         }
@@ -315,8 +332,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let visible = visibleFrame(of: anchor)
             // The remembered frame goes only after the window took it: a
             // move that fails must keep the way back.
+            // A window with no remembered place keeps its full screen state,
+            // and so does a window that is on a real display already.
             try moveMoonlight({ pid, frame in
-                Moonlight.frame(onReal: real, visible: visible, remembered: moonlightHome[pid], window: frame)
+                let home = moonlightHome[pid]
+                let goal = Moonlight.frame(onReal: real, visible: visible, remembered: home?.frame, window: frame)
+                return (goal, goal == frame ? nil : home?.fullScreen)
+            }, arrived: { frame in
+                real.contains { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) }
             }, moved: { moonlightHome[$0] = nil })
         } catch {
             showError(error)

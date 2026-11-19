@@ -326,18 +326,61 @@ enum AppWindow {
         return CGRect(origin: origin, size: size)
     }
 
-    static func setFrame(pid: pid_t, _ frame: CGRect) throws {
+    static func isFullScreen(pid: pid_t) throws -> Bool { isFullScreen(try mainWindow(pid)) }
+
+    /// Moves the window and returns the frame that it has afterwards: an app
+    /// can refuse a size, or put the window back. `fullScreen` is the state at
+    /// the end; nil keeps the state that the window has. `trace` gets one line
+    /// for each step, for the log.
+    @discardableResult
+    static func setFrame(pid: pid_t, _ frame: CGRect, fullScreen: Bool? = nil,
+                         trace: (String) -> Void = { _ in }) throws -> CGRect {
         let window = try mainWindow(pid)
+        // A window in native full screen has a Space of its own and refuses a
+        // position. It leaves full screen, moves, and enters full screen again
+        // on the display where it is then.
+        let wasFullScreen = isFullScreen(window)
+        var start = settledFrame(window)
+        trace("window at \(start), full screen \(wasFullScreen), target \(frame)")
+        if wasFullScreen {
+            try leaveFullScreen(window)
+            start = settledFrame(window)
+            trace("left full screen, window at \(start)")
+        }
+        // A window that still ends a transition (out of full screen, out of a
+        // zoom) ignores a request and reports no error, so the frame is read
+        // back and the request is sent again until the window moves.
+        var result = try apply(frame, to: window)
+        var attempt = 1
+        while result.origin == start.origin, start.origin != frame.origin, attempt < transitionAttempts {
+            attempt += 1
+            trace("the window did not move, attempt \(attempt)")
+            usleep(500_000)
+            result = try apply(frame, to: window)
+        }
+        trace("window at \(result)")
+        if fullScreen ?? wasFullScreen {
+            // The same rule for the way into full screen.
+            for _ in 0..<transitionAttempts {
+                _ = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanTrue)
+                usleep(500_000)
+                if isFullScreen(window) { break }
+            }
+            result = settledFrame(window)
+            trace("full screen \(isFullScreen(window)), window at \(result)")
+        }
+        return result
+    }
+
+    // 6 attempts, 0.5 s apart: a full screen animation takes about 1 s.
+    private static let transitionAttempts = 6
+
+    private static func apply(_ frame: CGRect, to window: AXUIElement) throws -> CGRect {
         var origin = frame.origin
         var size = frame.size
         guard let position = AXValueCreate(.cgPoint, &origin), let extent = AXValueCreate(.cgSize, &size) else {
             throw DisplayToggleError(description: "cannot build the window frame")
         }
-        // A window in native full screen has a Space of its own and refuses a
-        // position. It leaves full screen, moves, and enters full screen again
-        // on the display where it is then.
-        let wasFullScreen = isFullScreen(window)
-        if wasFullScreen { try leaveFullScreen(window) }
         // Size, position, size: macOS cuts a window that grows past the edge of
         // its current display, so the size is set again on the new display. A
         // window of fixed size refuses the size, and that is not an error.
@@ -347,9 +390,28 @@ enum AppWindow {
             throw DisplayToggleError(description: "cannot move the window (AXError \(err.rawValue))")
         }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
-        if wasFullScreen {
-            _ = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanTrue)
+        return settledFrame(window)
+    }
+
+    private static func currentFrame(_ window: AXUIElement) -> CGRect {
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        if let position = value(window, kAXPositionAttribute) { AXValueGetValue(position, .cgPoint, &origin) }
+        if let extent = value(window, kAXSizeAttribute) { AXValueGetValue(extent, .cgSize, &size) }
+        return CGRect(origin: origin, size: size)
+    }
+
+    // A frame change and a full screen change are animations. The frame is
+    // settled when two reads, 150 ms apart, agree; the wait ends after 3 s.
+    private static func settledFrame(_ window: AXUIElement) -> CGRect {
+        var last = currentFrame(window)
+        for _ in 0..<20 {
+            usleep(150_000)
+            let now = currentFrame(window)
+            if now == last { return now }
+            last = now
         }
+        return last
     }
 
     // AppKit has no constant for it.

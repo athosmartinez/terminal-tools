@@ -125,11 +125,21 @@ other people and holds nothing private:
     size-position-size). Moonlight's borderless stream is a native full
     screen window (`AXFullScreen` = 1), which refuses a position (AXError
     -25200): `setFrame` sets `AXFullScreen` to false, waits until the position
-    is settable, moves, and sets it to true again on the new display. The frame before the move is kept per pid in the app
-    (`moonlightHome`) for the way back, and dropped only after the window
-    took it. A window that covers its current display is a borderless stream
-    and covers the virtual one; a titled window fills the visible area. A
-    window on a real display is left where it is. The target frames are pure
+    is settable, moves, and sets it to true again on the new display. A window
+    that still ends a transition (out of full screen, out of a zoom) ignores
+    a frame request and reports success — this made the move work "sometimes".
+    So `setFrame` reads the frame back (`settledFrame`: two equal reads 150 ms
+    apart) and sends the request again, up to 6 times 0.5 s apart, also for
+    the way back into full screen; the app checks that the result is on the
+    wanted display and shows an error if not. Each step goes to the log
+    (`moonlight <pid>: …`, subsystem `…monitorbar`). On the virtual display
+    the window always ends in full screen: only then the video covers the
+    display and the pointer maps 1:1 (a titled window gave 1920x1050 at y=30
+    and a letterboxed video). The frame and the full screen state from before
+    the move are kept per pid in the app (`moonlightHome`) for the way back,
+    and dropped only after the window took them. A window on a real display
+    is left as it is. Verified on Moonlight 6.2.0 with a live stream, both
+    ways, from a window and from full screen. The target frames are pure
     (`Moonlight.frame(onVirtual:…)`, `frame(onReal:…)`); AppKit rectangles go
     through `Moonlight.global(cocoa:…)` because AX and displays count y down.
     Accessibility is tied to the cdhash like BatteryBar's Bluetooth: after
