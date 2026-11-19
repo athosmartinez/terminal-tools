@@ -192,7 +192,7 @@ virtual_y=0
 ```
 
 A comment goes on its own line: the text after `=` is the value, to the end of
-the line.
+the line. When a key repeats, the last valid line wins.
 
 Limits:
 

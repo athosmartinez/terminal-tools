@@ -53,6 +53,8 @@ check("bad values keep the defaults",
       defaults)
 check("a virtual_y out of range keeps the default, also the smallest integer",
       [MonitorConfig.parse("virtual_y=10001").virtualY, MonitorConfig.parse("virtual_y=\(Int.min)").virtualY], [0, 0])
+check("the last valid line of a repeated key wins",
+      MonitorConfig.parse("hdmi_input=5\nhdmi_input=17\nhdmi_input=x").hdmiInput, 17)
 check("a host may hold =", MonitorConfig.parse("moonlight_host=a=b").moonlightHost, "a=b")
 
 // MARK: which displays are external
