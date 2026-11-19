@@ -14,6 +14,7 @@
 // The display exists only while its CGVirtualDisplay object does. Its owner
 // must be a process that stays: MonitorBar, never the CLI.
 
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -253,15 +254,111 @@ enum Moonlight {
     /// command line. Its syntax has digits only: `+x+y` counts from the top
     /// left of the main display, and `-x` counts from the right edge. So it
     /// cannot name a negative coordinate (a display on the left of or above
-    /// the main one), and the result is nil then.
-    ///
-    /// TODO: when the result is nil, or if Moonlight ignores the option, move
-    /// Moonlight's window with the Accessibility API (kAXPositionAttribute).
-    /// That needs the Accessibility permission, which an ad-hoc rebuild of the
-    /// app can lose.
+    /// the main one), and the result is nil then. Moonlight then opens where
+    /// it was last, and moving its window (below) takes it to the display.
     static func windowGeometry(on display: CGRect) -> String? {
         let x = Int(display.minX) + inset, y = Int(display.minY) + inset
         guard x >= 0, y >= 0 else { return nil }
         return "+\(x)+\(y)"
+    }
+
+    // MARK: a window that is already open
+
+    /// Where a Moonlight window goes on the virtual display. A window that has
+    /// the display's own size is a borderless stream, and it covers the
+    /// display. Any other window has a title bar, which macOS keeps below the
+    /// menu bar, so it fills the area that the menu bar leaves.
+    static func frame(onVirtual bounds: CGRect, visible: CGRect, window: CGSize) -> CGRect {
+        window == bounds.size ? bounds : visible
+    }
+
+    /// Where it goes back to: the frame it had before the move, when a real
+    /// display still holds the middle of that frame. Otherwise the middle of
+    /// `visible`, the usable area of a real display, and no larger than it.
+    static func frame(onReal real: [CGRect], visible: CGRect, remembered: CGRect?, window: CGSize) -> CGRect {
+        if let remembered, real.contains(where: { $0.contains(CGPoint(x: remembered.midX, y: remembered.midY)) }) {
+            return remembered
+        }
+        let size = CGSize(width: min(window.width, visible.width), height: min(window.height, visible.height))
+        return CGRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
+
+    /// AppKit counts y up from the bottom of the primary screen. Displays and
+    /// the Accessibility API count y down from its top.
+    static func global(cocoa rect: CGRect, primaryHeight: CGFloat) -> CGRect {
+        CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
+    }
+}
+
+/// The main window of another app, read and moved through the Accessibility
+/// API. The user must allow MonitorBar in Privacy & Security > Accessibility.
+enum AppWindow {
+    /// Throws when the permission is missing, after macOS shows its request.
+    /// The grant belongs to one build of the app: an ad-hoc signature changes
+    /// with every rebuild, and macOS then keeps the entry but ignores it.
+    static func requireAccess() throws {
+        // The value of kAXTrustedCheckOptionPrompt. The constant is a global
+        // variable, which Swift's concurrency checks do not accept.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(options) else {
+            throw DisplayToggleError(description: """
+                MonitorBar needs the Accessibility permission to move a window: \
+                System Settings > Privacy & Security > Accessibility. If MonitorBar is in the list \
+                and this message still shows, remove it from the list and add it again.
+                """)
+        }
+    }
+
+    /// The frame in global coordinates: y grows down from the top of the main display.
+    static func frame(pid: pid_t) throws -> CGRect {
+        let window = try mainWindow(pid)
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard let position = value(window, kAXPositionAttribute), AXValueGetValue(position, .cgPoint, &origin),
+              let extent = value(window, kAXSizeAttribute), AXValueGetValue(extent, .cgSize, &size) else {
+            throw DisplayToggleError(description: "cannot read the window frame")
+        }
+        return CGRect(origin: origin, size: size)
+    }
+
+    static func setFrame(pid: pid_t, _ frame: CGRect) throws {
+        let window = try mainWindow(pid)
+        var origin = frame.origin
+        var size = frame.size
+        guard let position = AXValueCreate(.cgPoint, &origin), let extent = AXValueCreate(.cgSize, &size) else {
+            throw DisplayToggleError(description: "cannot build the window frame")
+        }
+        // Size, position, size: macOS cuts a window that grows past the edge of
+        // its current display, so the size is set again on the new display. A
+        // window of fixed size refuses the size, and that is not an error.
+        _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
+        let err = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
+        guard err == .success else {
+            throw DisplayToggleError(description: "cannot move the window (AXError \(err.rawValue))")
+        }
+        _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
+    }
+
+    private static func mainWindow(_ pid: pid_t) throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        if let main = copy(app, kAXMainWindowAttribute), CFGetTypeID(main) == AXUIElementGetTypeID() {
+            return unsafeDowncast(main, to: AXUIElement.self)
+        }
+        if let first = (copy(app, kAXWindowsAttribute) as? [AnyObject])?.first, CFGetTypeID(first) == AXUIElementGetTypeID() {
+            return unsafeDowncast(first, to: AXUIElement.self)
+        }
+        throw DisplayToggleError(description: "the app has no window to move")
+    }
+
+    private static func copy(_ element: AXUIElement, _ attribute: String) -> AnyObject? {
+        var result: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &result) == .success else { return nil }
+        return result
+    }
+
+    private static func value(_ element: AXUIElement, _ attribute: String) -> AXValue? {
+        guard let result = copy(element, attribute), CFGetTypeID(result) == AXValueGetTypeID() else { return nil }
+        return unsafeDowncast(result, to: AXValue.self)
     }
 }
