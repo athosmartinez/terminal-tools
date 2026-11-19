@@ -264,21 +264,25 @@ enum Moonlight {
 
     // MARK: a window that is already open
 
-    /// Where a Moonlight window goes on the virtual display. A window that has
-    /// the display's own size is a borderless stream, and it covers the
-    /// display. Any other window has a title bar, which macOS keeps below the
-    /// menu bar, so it fills the area that the menu bar leaves.
-    static func frame(onVirtual bounds: CGRect, visible: CGRect, window: CGSize) -> CGRect {
-        window == bounds.size ? bounds : visible
+    /// Where a Moonlight window goes on the virtual display. A borderless
+    /// stream covers its display, and it must cover the virtual one too: that
+    /// is a window with the frame of the display that it is on (`current`), or
+    /// with the virtual display's own size. Any other window has a title bar,
+    /// which macOS keeps below the menu bar, so it fills the area that the
+    /// menu bar leaves.
+    static func frame(onVirtual bounds: CGRect, visible: CGRect, window: CGRect, current: CGRect?) -> CGRect {
+        window.size == bounds.size || window == current ? bounds : visible
     }
 
-    /// Where it goes back to: the frame it had before the move, when a real
-    /// display still holds the middle of that frame. Otherwise the middle of
-    /// `visible`, the usable area of a real display, and no larger than it.
-    static func frame(onReal real: [CGRect], visible: CGRect, remembered: CGRect?, window: CGSize) -> CGRect {
-        if let remembered, real.contains(where: { $0.contains(CGPoint(x: remembered.midX, y: remembered.midY)) }) {
-            return remembered
-        }
+    /// Where it goes back to. A window that is on a real display stays where
+    /// it is. Otherwise it gets the frame from before the move, when a real
+    /// display holds the middle of that frame's top edge: the title bar must
+    /// be in reach. Otherwise it goes to the middle of `visible`, the usable
+    /// area of a real display, and is no larger than that area.
+    static func frame(onReal real: [CGRect], visible: CGRect, remembered: CGRect?, window: CGRect) -> CGRect {
+        func onReal(_ point: CGPoint) -> Bool { real.contains { $0.contains(point) } }
+        if onReal(CGPoint(x: window.midX, y: window.midY)) { return window }
+        if let remembered, onReal(CGPoint(x: remembered.midX, y: remembered.minY)) { return remembered }
         let size = CGSize(width: min(window.width, visible.width), height: min(window.height, visible.height))
         return CGRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2,
                       width: size.width, height: size.height)

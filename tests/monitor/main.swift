@@ -141,28 +141,40 @@ check("without a geometry the command has no Qt option",
 
 let virtualBounds = CGRect(x: 2560, y: 0, width: 1920, height: 1080)
 let virtualVisible = CGRect(x: 2560, y: 25, width: 1920, height: 1055)
-check("a window of the display's size covers the display",
-      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: CGSize(width: 1920, height: 1080)),
-      virtualBounds)
+let home = CGRect(x: 300, y: 200, width: 1280, height: 748)
+check("a window of the virtual display's size covers the display",
+      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible,
+                      window: CGRect(x: 320, y: 180, width: 1920, height: 1080), current: main), virtualBounds)
+check("a borderless stream that covers a real display of another size covers the virtual one",
+      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: main, current: main), virtualBounds)
 check("any other window fills the area below the menu bar",
-      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: CGSize(width: 1280, height: 748)),
-      virtualVisible)
+      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: home, current: main), virtualVisible)
+check("a window on no display fills the area below the menu bar",
+      Moonlight.frame(onVirtual: virtualBounds, visible: virtualVisible, window: home, current: nil), virtualVisible)
 
 let mainVisible = CGRect(x: 0, y: 25, width: 2560, height: 1415)
-let home = CGRect(x: 300, y: 200, width: 1280, height: 748)
+let onVirtual = CGRect(x: 2600, y: 100, width: 1280, height: 748)
 check("back: the frame from before the move",
-      Moonlight.frame(onReal: [main, panelOnTheLeft], visible: mainVisible, remembered: home,
-                      window: CGSize(width: 1920, height: 1055)), home)
+      Moonlight.frame(onReal: [main, panelOnTheLeft], visible: mainVisible, remembered: home, window: virtualVisible),
+      home)
 check("back: no remembered frame is the middle of the real display, same size",
-      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: nil, window: CGSize(width: 1280, height: 748)),
+      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: nil, window: onVirtual),
       CGRect(x: 640, y: 358.5, width: 1280, height: 748))
 check("back: a remembered frame on a display that is gone is not used, and the window shrinks to fit",
       Moonlight.frame(onReal: [panelOnTheLeft], visible: CGRect(x: -1710, y: 653, width: 1710, height: 1082),
-                      remembered: home, window: CGSize(width: 1920, height: 1080)),
+                      remembered: home, window: virtualBounds),
       CGRect(x: -1710, y: 654, width: 1710, height: 1080))
 check("back: a remembered frame on the virtual display is not used",
-      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: virtualBounds, window: CGSize(width: 800, height: 600)),
+      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: virtualBounds,
+                      window: CGRect(x: 2700, y: 100, width: 800, height: 600)),
       CGRect(x: 880, y: 432.5, width: 800, height: 600))
+check("back: a remembered frame with its title bar above every display is not used",
+      Moonlight.frame(onReal: [main], visible: mainVisible,
+                      remembered: CGRect(x: 300, y: -800, width: 1280, height: 1800), window: onVirtual),
+      CGRect(x: 640, y: 358.5, width: 1280, height: 748))
+check("back: a window that is on a real display stays where it is",
+      Moonlight.frame(onReal: [main], visible: mainVisible, remembered: CGRect(x: 10, y: 40, width: 800, height: 600),
+                      window: home), home)
 
 check("AppKit to global: the primary screen below its menu bar",
       Moonlight.global(cocoa: CGRect(x: 0, y: 0, width: 2560, height: 1415), primaryHeight: 1440), mainVisible)
