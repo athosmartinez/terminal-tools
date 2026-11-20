@@ -72,8 +72,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // A tracked Moonlight that quits must not keep the warning.
     @objc private func noteQuit(_ notification: Notification) {
-        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-        guard app?.bundleIdentifier == Moonlight.bundleID else { return }
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.bundleIdentifier == Moonlight.bundleID else { return }
+        // The list of running apps can still hold it now, and a pid with no
+        // window counts as left.
+        moonlightOnVirtual.remove(app.processIdentifier)
+        moonlightHome[app.processIdentifier] = nil
         checkMoonlight()
     }
 
