@@ -119,9 +119,11 @@ other people and holds nothing private:
     up to 8 times 1 s apart (one try gave "not active" and left it there); a
     thrown error is retried the same way. `place` checks for a real display
     before it checks the list, because both can be missing at once. After the
-    last failed try the app releases the object and makes a new display, once
-    per chain (`recreatedVirtual`): WindowServer can drop the display, keep
-    the object, and send no event when it returns.
+    last failed try the app releases the object and makes a new display
+    (`recreatedVirtual`): WindowServer can drop the display, keep the object,
+    and send no event when it returns. Only once until a placement succeeds,
+    a Turn On or a wake: a display event cannot reset it, because the new
+    display's own add event would start a cycle of about 9 s.
   - After a placement the app checks the Moonlight windows that the user sent
     to the virtual display (`moonlightOnVirtual`): macOS moves them off a
     display that leaves the list and never back. It does not move them (the

@@ -67,6 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // The arrangement can change over a sleep with no display added or removed.
     @objc private func noteWake() {
         lastWake = Date()
+        // A wake is a system event, never the app's own, so a new recreate
+        // cannot start a cycle.
+        recreatedVirtual = false
         schedulePlacement()
     }
 
