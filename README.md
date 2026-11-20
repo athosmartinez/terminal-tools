@@ -139,8 +139,9 @@ and whenever the source changes (binary cached in `~/.cache/terminal-tools/`).
 `monitor app` builds **MonitorBar** into `~/Applications/MonitorBar.app`: a menu
 bar icon (`display` when on, `tv.slash` when off) with a one-click toggle and a
 "Launch at Login" switch, enabled on first launch. It is an agent app — no Dock
-icon, no Cmd-Tab entry — and event-driven (no polling), so it idles at ~0% CPU
-and ~20 MB. Run `monitor app` again after changing the Swift sources.
+icon, no Cmd-Tab entry — and event-driven (no polling of the display state),
+so it idles at ~0% CPU and ~20 MB. The one timer is the window rescue below: a
+window list every 2 seconds, only while the virtual display is on. Run `monitor app` again after changing the Swift sources.
 
 While it runs, MonitorBar turns a display that is off back on when a USB-C cable
 with video connects. A plain charger does not trigger it, and a display left off
@@ -185,8 +186,26 @@ the Moonlight window off the virtual display then; MonitorBar does not move it
 back by itself, but the icon gets a warning badge and the menu says *Moonlight
 left the virtual display*: use *Move Moonlight to Virtual Display*. This check
 needs the Accessibility permission; without it the icon gets the badge too and
-the menu shows *Allow Accessibility to Check Moonlight*. `monitor off`,
-`on` and `status` ignore it. Settings, in `~/.config/terminal-tools/monitor.conf`:
+the menu shows *Allow Accessibility for Window Checks*.
+
+Only Moonlight belongs on the virtual display, but other windows can land
+there too: macOS moves the windows of an unplugged monitor, an app opens a new
+window on the display under the pointer, or an app restores its last place.
+While the virtual display is on, MonitorBar moves every window of another app
+whose middle is on it back to the main display (the one with the menu bar):
+same size when it fits, else shrunk to the usable area, at the same relative
+place (a window in the top left corner goes to the top left corner). A full
+screen window leaves full screen and comes back as a plain window. A Moonlight
+window is never moved by itself. MonitorBar looks every 2 seconds, when an app
+comes to the front, and after the virtual display moves; there is no system
+event for a new window. Each window gets 3 automatic attempts; a window that
+stays (or that its app keeps putting back) then waits until you choose *Move
+Other Windows to Main Display*, turn the virtual display on again, or a
+display is added or removed. While any window is there, the icon gets the
+warning badge and the menu says *N windows on the virtual display*, with that
+item. The move needs the Accessibility permission; without it the windows
+only get the badge and the menu shows *Allow Accessibility for Window Checks*.
+`monitor off`, `on` and `status` ignore all of this. Settings, in `~/.config/terminal-tools/monitor.conf`:
 
 ```ini
 # Required for the Moonlight item: a host that is already paired in Moonlight.
@@ -208,13 +227,17 @@ Limits:
 
 - It uses the private `CGVirtualDisplay` classes, found at run time. On a macOS
   without them, the menu says so and the rest of MonitorBar works.
-- Windows, the Dock and the menu bar can land on a display you cannot see. Turn
-  it off to get them back.
+- The Dock and the menu bar can land on a display you cannot see, and so can a
+  window that MonitorBar cannot move or cannot see. It sees only the windows on
+  the Space that the virtual display shows: while Moonlight is in full screen
+  there, windows on that display's desktop Space are hidden behind it.
+  *Move Moonlight to Main Display* shows that Space again. Turning the virtual
+  display off brings everything back.
 - A new stream is placed with Qt's `-qwindowgeometry +x+y`. That option cannot
   name a negative coordinate, so with `virtual_side=left` (or a display above the
   main one) Moonlight opens where it was last. Use *Move Moonlight to Virtual
   Display* then.
-- The two *Move* items need the Accessibility permission (System Settings >
+- The *Move* items need the Accessibility permission (System Settings >
   Privacy & Security > Accessibility); macOS asks on the first use. The grant
   belongs to one build: after `monitor app`, remove MonitorBar from that list and
   add it again, or run

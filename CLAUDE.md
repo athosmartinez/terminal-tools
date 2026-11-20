@@ -66,7 +66,8 @@ other people and holds nothing private:
   `monitor app` rebuilds `~/Applications/MonitorBar.app` (Info.plist with
   `LSUIElement`, ad-hoc `codesign` required by `SMAppService`) and relaunches
   it. Both compile with `-swift-version 5`. The app refreshes its icon from
-  `CGDisplayRegisterReconfigurationCallback`, never by polling. The app also
+  `CGDisplayRegisterReconfigurationCallback`, never by polling (the one
+  timer is the window rescue: no event tells that a window opened). The app also
   restores an off display when a cable connects: the trigger is a new
   `IOPortTransportStateDisplayPort` (IOKit match). `.addFlag` cannot do it: a
   disabled display drops out of the online list too and sends no add event on
@@ -132,11 +133,42 @@ other people and holds nothing private:
     AX cannot find counts as left (`Moonlight.leftVirtual`). The check runs 2 s
     after a placement (the AX frame comes late), 5 s after Open Moonlight,
     at menu open and when a Moonlight quits. Without the Accessibility grant
-    the badge shows too, with the item *Allow Accessibility to Check
-    Moonlight*. The check's AX calls have a 1 s timeout
+    the badge shows too, with the item *Allow Accessibility for Window
+    Checks*. The check's AX calls have a 1 s timeout
     (`AppWindow.checkTimeout`, `AXUIElementSetMessagingTimeout`): it runs on
     the main thread at every menu open. A move keeps the default wait: a
     window in a full screen transition can answer late.
+  - Window rescue (`WindowRescue` in `VirtualDisplay.swift`, the pure rules;
+    `rescueWindows` in the app): a window of another app whose middle is on
+    the virtual display moves to `CGMainDisplayID`, else the anchor
+    (`WindowRescue.target`), at the same relative place, shrunk only when it
+    does not fit the visible frame (`WindowRescue.frame`). A full screen
+    window leaves full screen and stays a plain window. Moonlight (its pids
+    from `Moonlight.bundleID`) and MonitorBar are never moved; `moonlight_app=`
+    names the app on the remote host, so it has no local window. Detection is
+    `CGWindowListCopyWindowInfo(.optionOnScreenOnly)`, layer 0, alpha > 0, and
+    needs no grant. `.optionAll` is not usable: every app has hidden layer 0
+    windows on every display (title bar strips, 500x500 placeholders), so all
+    apps would count. The cost: a window on a Space that the virtual display
+    does not show (its desktop Space behind a full screen Moonlight) is not
+    seen. The move matches the CG window to an AX window of its pid by frame
+    (`AppWindow.window`, 1 pt tolerance) and runs `AppWindow.setFrame` on it.
+    Trigger: a 2 s `Timer` from Turn On to Turn Off — the one exception to
+    "never by polling", because no event tells that a window opened or moved
+    without an AX observer in every app — plus `didActivateApplication` and
+    every successful placement. The timer is in the default run loop mode, so
+    no tick runs while the menu is open; the menu only counts. Moves run on a
+    serial queue, off the main thread, with `checkTimeout` on every AX call;
+    `rescueGeneration` drops a pass that ends after Turn Off. No loop: each
+    window number gets `WindowRescue.attempts` (3) automatic attempts, and
+    every attempt counts, also a success, because an app can put the window
+    back. A count stays while the window exists (`pruned`); Turn On, the
+    menu item *Move Other Windows to Main Display* and a display
+    add/remove/enable/disable event clear the counts (never "moved" flags:
+    `place` raises them). A window still there gets the badge and the menu
+    line "N windows on the virtual display". The timer never asks for the
+    grant (`AXIsProcessTrusted`, no prompt); only the menu item does.
+    A tick is skipped while a mouse button is down (a drag).
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and
     `createsNewApplicationInstance` (a child `Process` would run under
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the
