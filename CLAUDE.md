@@ -116,13 +116,23 @@ other people and holds nothing private:
     when a placement finds a real display (lid opened, wake). While a monitor
     is plugged in or out, WindowServer leaves the virtual display out of the
     active list for a moment: `place` returns false and the app tries again,
-    up to 8 times 1 s apart (one try gave "not active" and left it there).
+    up to 8 times 1 s apart (one try gave "not active" and left it there); a
+    thrown error is retried the same way. `place` checks for a real display
+    before it checks the list, because both can be missing at once. After the
+    last failed try the app releases the object and makes a new display, once
+    per chain (`recreatedVirtual`): WindowServer can drop the display, keep
+    the object, and send no event when it returns.
   - After a placement the app checks the Moonlight windows that the user sent
     to the virtual display (`moonlightOnVirtual`): macOS moves them off a
     display that leaves the list and never back. It does not move them (the
     owner's choice): the icon gets a warning badge and the menu says
     "Moonlight left the virtual display" above the *Move* items. A window that
-    AX cannot find counts as left (`Moonlight.leftVirtual`).
+    AX cannot find counts as left (`Moonlight.leftVirtual`). The check runs 2 s
+    after a placement (the AX frame comes late), 5 s after Open Moonlight,
+    at menu open and when a Moonlight quits. Without the Accessibility grant
+    the badge shows too, with the item *Allow Accessibility to Check
+    Moonlight*. AX calls have a 1 s timeout (`AXUIElementSetMessagingTimeout`):
+    the check runs on the main thread at every menu open.
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and
     `createsNewApplicationInstance` (a child `Process` would run under
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the

@@ -94,13 +94,14 @@ final class VirtualDisplay {
     func place(_ config: MonitorConfig) throws -> Bool {
         guard let id = displayID else { return true }
         let active = try DisplayToggle.displays(online: false)
-        guard active.contains(where: { $0.id == id }) else { return false }
         // With no real display active, the virtual one is the whole desktop:
-        // every window is on a screen that nobody can see.
+        // every window is on a screen that nobody can see. This comes first:
+        // the virtual display can be out of the list at the same time.
         guard let anchor = Self.anchor(active) else {
             turnOff()
             throw DisplayToggleError(description: "no real display is active — virtual display turned off")
         }
+        guard active.contains(where: { $0.id == id }) else { return false }
         let bounds = CGDisplayBounds(id)
         let real = active.filter { !$0.isVirtual }.map { CGDisplayBounds($0.id) }
         let wanted = Self.origin(anchor: CGDisplayBounds(anchor), real: real, width: bounds.width,
@@ -449,13 +450,23 @@ enum AppWindow {
         throw DisplayToggleError(description: "the window did not leave full screen")
     }
 
+    // The calls are synchronous and run on the main thread, also at every
+    // menu open: an app that does not answer must not freeze the menu for the
+    // default wait of about 6 s per call.
+    private static let messagingTimeout: Float = 1
+
     private static func mainWindow(_ pid: pid_t) throws -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        var window: AXUIElement?
         if let main = copy(app, kAXMainWindowAttribute), CFGetTypeID(main) == AXUIElementGetTypeID() {
-            return unsafeDowncast(main, to: AXUIElement.self)
+            window = unsafeDowncast(main, to: AXUIElement.self)
+        } else if let first = (copy(app, kAXWindowsAttribute) as? [AnyObject])?.first, CFGetTypeID(first) == AXUIElementGetTypeID() {
+            window = unsafeDowncast(first, to: AXUIElement.self)
         }
-        if let first = (copy(app, kAXWindowsAttribute) as? [AnyObject])?.first, CFGetTypeID(first) == AXUIElementGetTypeID() {
-            return unsafeDowncast(first, to: AXUIElement.self)
+        if let window {
+            AXUIElementSetMessagingTimeout(window, messagingTimeout)
+            return window
         }
         throw DisplayToggleError(description: "the app has no window to move")
     }

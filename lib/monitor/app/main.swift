@@ -29,6 +29,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // whether one of their windows is not there now.
     private var moonlightOnVirtual: Set<pid_t> = []
     private var moonlightLeft = false
+    // Tracked windows that cannot be checked: no Accessibility grant (it is
+    // dropped silently after every rebuild, and Open Moonlight needs none).
+    private var moonlightUnchecked = false
+    private var pendingMoonlightCheck: DispatchWorkItem?
+    // The app recreates a display that WindowServer dropped once per chain of
+    // failed placements; a display that is never listed must not cycle.
+    private var recreatedVirtual = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -50,6 +57,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
             workspace.addObserver(self, selector: #selector(noteWake), name: name, object: nil)
         }
+        workspace.addObserver(self, selector: #selector(noteQuit(_:)),
+                              name: NSWorkspace.didTerminateApplicationNotification, object: nil)
     }
 
     // The virtual display lives in this process, so it must go with it.
@@ -59,6 +68,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func noteWake() {
         lastWake = Date()
         schedulePlacement()
+    }
+
+    // A tracked Moonlight that quits must not keep the warning.
+    @objc private func noteQuit(_ notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        guard app?.bundleIdentifier == Moonlight.bundleID else { return }
+        checkMoonlight()
     }
 
     // The anchor of the virtual display can appear or go (cable, `monitor
@@ -96,16 +112,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             if try virtual.place(config) {
-                checkMoonlight()
+                recreatedVirtual = false
+                scheduleMoonlightCheck()
             } else if attempt < Self.placementAttempts {
                 schedulePlacement(attempt: attempt + 1)
+            } else if !recreatedVirtual {
+                // WindowServer can drop the display and leave the object, and
+                // its return sends no event: a new object comes back listed.
+                log.notice("virtual display: not active after \(attempt, privacy: .public) attempts, made again \(DisplayToggle.summary(), privacy: .public)")
+                recreatedVirtual = true
+                virtual.turnOff()
+                schedulePlacement()
             } else {
                 log.error("virtual display: not active after \(attempt, privacy: .public) attempts \(DisplayToggle.summary(), privacy: .public)")
             }
         } catch {
             log.error("virtual display: \(String(describing: error), privacy: .public)")
+            // WindowServer can refuse a configuration while it settles. With
+            // no real display, `place` released the object: nothing to retry.
+            if virtual.displayID != nil, attempt < Self.placementAttempts {
+                schedulePlacement(attempt: attempt + 1)
+            }
         }
         refreshIcon()
+    }
+
+    // The window moves with the display, but its AX frame and a new window
+    // arrive a moment later; a read at once can be stale.
+    private func scheduleMoonlightCheck(after delay: TimeInterval = 2) {
+        pendingMoonlightCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.checkMoonlight() }
+        pendingMoonlightCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     // Only a warning: the user moves the window with the menu, so a window
@@ -114,14 +152,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let running = Set(moonlightPIDs)
         moonlightOnVirtual.formIntersection(running)
         var left = false
-        if !moonlightOnVirtual.isEmpty, let id = virtual.displayID, virtual.isOn, AXIsProcessTrusted() {
-            let bounds = CGDisplayBounds(id)
-            left = moonlightOnVirtual.contains { Moonlight.leftVirtual(window: try? AppWindow.frame(pid: $0), virtual: bounds) }
+        var unchecked = false
+        if !moonlightOnVirtual.isEmpty, let id = virtual.displayID, virtual.isOn {
+            if AXIsProcessTrusted() {
+                let bounds = CGDisplayBounds(id)
+                left = moonlightOnVirtual.contains { Moonlight.leftVirtual(window: try? AppWindow.frame(pid: $0), virtual: bounds) }
+            } else {
+                unchecked = true
+            }
         }
         if left != moonlightLeft {
             log.notice("moonlight: \(left ? "left" : "back on", privacy: .public) the virtual display")
         }
         moonlightLeft = left
+        moonlightUnchecked = unchecked
         refreshIcon()
     }
 
@@ -191,14 +235,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshIcon() {
         let state = DisplayToggle.state()
-        let image = moonlightLeft
+        let warning = moonlightLeft || moonlightUnchecked
+        let image = warning
             ? NSImage(systemSymbolName: "display.trianglebadge.exclamationmark",
-                      accessibilityDescription: "Moonlight left the virtual display")
+                      accessibilityDescription: "Moonlight needs attention")
             : NSImage(systemSymbolName: state == .on ? "display" : "tv.slash",
                       accessibilityDescription: "External display")
         image?.isTemplate = true
         statusItem.button?.image = image
-        statusItem.button?.appearsDisabled = state == .absent && !moonlightLeft
+        statusItem.button?.appearsDisabled = state == .absent && !warning
     }
 
     // Rebuilt on every open so the labels always match the current state.
@@ -256,9 +301,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if moonlightLeft {
                 menu.addItem(withTitle: "Moonlight left the virtual display", action: nil, keyEquivalent: "").isEnabled = false
             }
+            if moonlightUnchecked {
+                menu.addItem(withTitle: "Allow Accessibility to Check Moonlight", action: #selector(askAccessibility), keyEquivalent: "").target = self
+            }
             menu.addItem(withTitle: "Move Moonlight to Virtual Display", action: #selector(moveMoonlightToVirtual), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Move Moonlight to Main Display", action: #selector(moveMoonlightToMain), keyEquivalent: "").target = self
         }
+    }
+
+    // macOS shows its own request; the error text says what to do when the
+    // list has a stale entry from an earlier build.
+    @objc private func askAccessibility() {
+        do { try AppWindow.requireAccess() } catch { showError(error) }
     }
 
     @objc private func toggleVirtual() {
@@ -266,16 +320,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             virtual.turnOff()
             virtualWanted = false
             pendingPlacement?.cancel()
+            pendingMoonlightCheck?.cancel()
             // macOS moves the windows back by itself, to places of its choice.
             moonlightHome.removeAll()
             moonlightOnVirtual.removeAll()
             moonlightLeft = false
+            moonlightUnchecked = false
             refreshIcon()
             return
         }
         do {
             try virtual.turnOn(MonitorConfig.load())
             virtualWanted = true
+            recreatedVirtual = false
             schedulePlacement()
         } catch {
             showError(error)
@@ -301,7 +358,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
                 DispatchQueue.main.async {
                     if let error { self?.showError(error) }
-                    if let pid = app?.processIdentifier { self?.moonlightOnVirtual.insert(pid) }
+                    // A Turn Off can come before the launch ends.
+                    guard let self, let pid = app?.processIdentifier, self.virtualWanted else { return }
+                    self.moonlightOnVirtual.insert(pid)
+                    // The stream window opens some seconds after the launch.
+                    self.scheduleMoonlightCheck(after: 5)
                 }
             }
         } catch {

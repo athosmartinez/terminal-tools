@@ -183,7 +183,9 @@ again when a real display comes back (lid opened, wake). When a monitor is
 plugged in or out, the display moves to its new place by itself. macOS can move
 the Moonlight window off the virtual display then; MonitorBar does not move it
 back by itself, but the icon gets a warning badge and the menu says *Moonlight
-left the virtual display*: use *Move Moonlight to Virtual Display*. `monitor off`,
+left the virtual display*: use *Move Moonlight to Virtual Display*. This check
+needs the Accessibility permission; without it the menu shows *Allow
+Accessibility to Check Moonlight*. `monitor off`,
 `on` and `status` ignore it. Settings, in `~/.config/terminal-tools/monitor.conf`:
 
 ```ini
