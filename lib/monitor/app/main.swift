@@ -156,7 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !moonlightOnVirtual.isEmpty, let id = virtual.displayID, virtual.isOn {
             if AXIsProcessTrusted() {
                 let bounds = CGDisplayBounds(id)
-                left = moonlightOnVirtual.contains { Moonlight.leftVirtual(window: try? AppWindow.frame(pid: $0), virtual: bounds) }
+                left = moonlightOnVirtual.contains {
+                    Moonlight.leftVirtual(window: try? AppWindow.frame(pid: $0, timeout: AppWindow.checkTimeout), virtual: bounds)
+                }
             } else {
                 unchecked = true
             }

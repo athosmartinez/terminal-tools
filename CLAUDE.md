@@ -131,8 +131,10 @@ other people and holds nothing private:
     after a placement (the AX frame comes late), 5 s after Open Moonlight,
     at menu open and when a Moonlight quits. Without the Accessibility grant
     the badge shows too, with the item *Allow Accessibility to Check
-    Moonlight*. AX calls have a 1 s timeout (`AXUIElementSetMessagingTimeout`):
-    the check runs on the main thread at every menu open.
+    Moonlight*. The check's AX calls have a 1 s timeout
+    (`AppWindow.checkTimeout`, `AXUIElementSetMessagingTimeout`): it runs on
+    the main thread at every menu open. A move keeps the default wait: a
+    window in a full screen transition can answer late.
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and
     `createsNewApplicationInstance` (a child `Process` would run under
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the

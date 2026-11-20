@@ -328,8 +328,9 @@ enum AppWindow {
     }
 
     /// The frame in global coordinates: y grows down from the top of the main display.
-    static func frame(pid: pid_t) throws -> CGRect {
-        let window = try mainWindow(pid)
+    /// `timeout` is the wait for each AX call in seconds; nil keeps the default.
+    static func frame(pid: pid_t, timeout: Float? = nil) throws -> CGRect {
+        let window = try mainWindow(pid, timeout: timeout)
         var origin = CGPoint.zero
         var size = CGSize.zero
         guard let position = value(window, kAXPositionAttribute), AXValueGetValue(position, .cgPoint, &origin),
@@ -450,14 +451,15 @@ enum AppWindow {
         throw DisplayToggleError(description: "the window did not leave full screen")
     }
 
-    // The calls are synchronous and run on the main thread, also at every
-    // menu open: an app that does not answer must not freeze the menu for the
-    // default wait of about 6 s per call.
-    private static let messagingTimeout: Float = 1
+    // The check reads the frame on the main thread, also at every menu open:
+    // an app that does not answer must not freeze the menu for the default
+    // wait of about 6 s per call. A move keeps the default: a window in a full
+    // screen transition can answer late, and the move was verified with it.
+    static let checkTimeout: Float = 1
 
-    private static func mainWindow(_ pid: pid_t) throws -> AXUIElement {
+    private static func mainWindow(_ pid: pid_t, timeout: Float? = nil) throws -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, messagingTimeout)
+        if let timeout { AXUIElementSetMessagingTimeout(app, timeout) }
         var window: AXUIElement?
         if let main = copy(app, kAXMainWindowAttribute), CFGetTypeID(main) == AXUIElementGetTypeID() {
             window = unsafeDowncast(main, to: AXUIElement.self)
@@ -465,7 +467,7 @@ enum AppWindow {
             window = unsafeDowncast(first, to: AXUIElement.self)
         }
         if let window {
-            AXUIElementSetMessagingTimeout(window, messagingTimeout)
+            if let timeout { AXUIElementSetMessagingTimeout(window, timeout) }
             return window
         }
         throw DisplayToggleError(description: "the app has no window to move")
