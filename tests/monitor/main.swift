@@ -191,6 +191,84 @@ check("AppKit to global: the primary screen below its menu bar",
 check("AppKit to global: a screen on the right, top edges aligned",
       Moonlight.global(cocoa: CGRect(x: 2560, y: 360, width: 1920, height: 1055), primaryHeight: 1440), virtualVisible)
 
+// MARK: windows of other apps on the virtual display
+
+let moonlightPID: pid_t = 500, ownPID: pid_t = 600
+func listedWindow(_ number: CGWindowID, pid: pid_t = 100, layer: Int = 0, alpha: Double = 1, _ bounds: CGRect) -> ListedWindow {
+    ListedWindow(number: number, pid: pid, layer: layer, alpha: alpha, bounds: bounds)
+}
+let editor = listedWindow(1, CGRect(x: 2700, y: 100, width: 800, height: 600))
+let windows = [
+    editor,
+    listedWindow(2, CGRect(x: 300, y: 200, width: 800, height: 600)),                    // on the main display
+    listedWindow(3, layer: 25, CGRect(x: 2600, y: 0, width: 300, height: 400)),          // a menu
+    listedWindow(4, alpha: 0, CGRect(x: 2600, y: 0, width: 300, height: 400)),           // invisible
+    listedWindow(5, pid: moonlightPID, virtualBounds),                                   // the stream
+    listedWindow(6, pid: ownPID, CGRect(x: 2600, y: 0, width: 300, height: 400)),        // MonitorBar
+    listedWindow(7, CGRect(x: 2400, y: 100, width: 600, height: 400)),                   // middle at x 2700
+    listedWindow(8, CGRect(x: 2200, y: 100, width: 600, height: 400)),                   // middle at x 2500
+    listedWindow(9, CGRect(x: 2600, y: 100, width: 0, height: 0)),                       // no size
+]
+check("stranded: layer 0, visible, middle on the virtual display, not Moonlight or MonitorBar",
+      WindowRescue.stranded(windows, virtual: virtualBounds, moonlight: [moonlightPID], own: ownPID).map(\.number), [1, 7])
+check("stranded: a Moonlight window is never a candidate, also when it is not the stream",
+      WindowRescue.stranded([listedWindow(1, pid: moonlightPID, CGRect(x: 2700, y: 100, width: 800, height: 600))],
+                            virtual: virtualBounds, moonlight: [moonlightPID], own: ownPID), [])
+
+check("due: a window with attempts left", WindowRescue.due([editor], tried: [1: 2]).map(\.number), [1])
+check("due: a window that used its attempts waits for a reset", WindowRescue.due([editor], tried: [1: 3]), [])
+check("due: a new window", WindowRescue.due([editor], tried: [:]).map(\.number), [1])
+check("pruned: the count of a window that left the virtual display stays",
+      WindowRescue.pruned([1: 1, 2: 3], listed: windows), [1: 1, 2: 3])
+check("pruned: the count of a window that is gone goes", WindowRescue.pruned([1: 1, 42: 3], listed: windows), [1: 1])
+
+check("target: the main display", WindowRescue.target(main: 1, active: [builtin, monitor, virtual]), 1)
+check("target: the anchor when the menu bar is on the virtual display",
+      WindowRescue.target(main: 3, active: [builtin, monitor, virtual]), 2)
+check("target: the anchor when the main display is not active",
+      WindowRescue.target(main: 2, active: [builtin, virtual]), 1)
+check("target: none with no real display", WindowRescue.target(main: 3, active: [virtual]), nil)
+
+check("frame: the top left corner stays the top left corner, same size",
+      WindowRescue.frame(window: CGRect(x: 2560, y: 0, width: 800, height: 600), virtual: virtualBounds, visible: mainVisible),
+      CGRect(x: 0, y: 25, width: 800, height: 600))
+check("frame: the bottom right corner stays the bottom right corner",
+      WindowRescue.frame(window: CGRect(x: 3680, y: 480, width: 800, height: 600), virtual: virtualBounds, visible: mainVisible),
+      CGRect(x: 1760, y: 840, width: 800, height: 600))
+check("frame: the middle stays the middle",
+      WindowRescue.frame(window: CGRect(x: 3120, y: 240, width: 800, height: 600), virtual: virtualBounds, visible: mainVisible),
+      CGRect(x: 880, y: 433, width: 800, height: 600))
+check("frame: a window of the virtual display's size shrinks to the usable area",
+      WindowRescue.frame(window: virtualBounds, virtual: virtualBounds,
+                         visible: CGRect(x: -1710, y: 653, width: 1710, height: 1082)),
+      CGRect(x: -1710, y: 654, width: 1710, height: 1080))
+check("frame: a window past the edge of the virtual display stays inside the usable area",
+      WindowRescue.frame(window: CGRect(x: 4000, y: -100, width: 800, height: 600), virtual: virtualBounds, visible: mainVisible),
+      CGRect(x: 1760, y: 25, width: 800, height: 600))
+
+check("matches: the same frame", WindowRescue.matches(editor.bounds, editor.bounds), true)
+check("matches: a fraction of a point apart",
+      WindowRescue.matches(CGRect(x: 2700.5, y: 99.5, width: 800, height: 600.5), editor.bounds), true)
+check("matches: another window of the same size",
+      WindowRescue.matches(CGRect(x: 2720, y: 100, width: 800, height: 600), editor.bounds), false)
+
+let entry: [String: Any] = [
+    kCGWindowNumber as String: NSNumber(value: 77),
+    kCGWindowOwnerPID as String: NSNumber(value: 123),
+    kCGWindowLayer as String: NSNumber(value: 0),
+    kCGWindowAlpha as String: NSNumber(value: 1.0),
+    kCGWindowBounds as String: CGRect(x: 2700, y: 100, width: 800, height: 600).dictionaryRepresentation,
+]
+check("listed: an entry of the window list",
+      WindowRescue.listed([entry]), [listedWindow(77, pid: 123, CGRect(x: 2700, y: 100, width: 800, height: 600))])
+check("listed: an entry with no bounds is dropped",
+      WindowRescue.listed([entry.filter { $0.key != kCGWindowBounds as String }]), [])
+check("listed: an entry with bounds that are not a rectangle is dropped",
+      WindowRescue.listed([entry.merging([kCGWindowBounds as String: "2700,100"]) { $1 }]), [])
+check("listed: no layer is layer 0, no alpha is opaque",
+      WindowRescue.listed([entry.filter { $0.key != kCGWindowLayer as String && $0.key != kCGWindowAlpha as String }]),
+      [listedWindow(77, pid: 123, CGRect(x: 2700, y: 100, width: 800, height: 600))])
+
 // MARK: the private classes
 
 // Builds the request only; no CGVirtualDisplay is made, so no display appears.

@@ -308,8 +308,107 @@ enum Moonlight {
     }
 }
 
-/// The main window of another app, read and moved through the Accessibility
-/// API. The user must allow MonitorBar in Privacy & Security > Accessibility.
+/// A window as the window server lists it. `bounds` is in global coordinates,
+/// y down, the same space as `CGDisplayBounds` and the Accessibility API.
+struct ListedWindow: Equatable {
+    let number: CGWindowID
+    let pid: pid_t
+    let layer: Int
+    let alpha: Double
+    let bounds: CGRect
+}
+
+/// The windows of other apps that land on the virtual display, where nobody
+/// sees them, and where they go back to. Only a Moonlight stream belongs there.
+enum WindowRescue {
+    /// Automatic attempts per window. An app can put a moved window back, so
+    /// every attempt counts, also one that moved the window: a window that
+    /// keeps coming back stops after this many moves and gets the badge.
+    static let attempts = 3
+
+    /// The on-screen windows. Detection needs no Accessibility grant. A window
+    /// on a Space that is not shown (for example the desktop Space of the
+    /// virtual display behind a full screen Moonlight) is not on screen.
+    static func onScreen() -> [ListedWindow] {
+        listed(CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? [])
+    }
+
+    /// The entries of `CGWindowListCopyWindowInfo`. An entry with no number,
+    /// owner or bounds is dropped.
+    static func listed(_ info: [[String: Any]]) -> [ListedWindow] {
+        info.compactMap { entry in
+            guard let number = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  let raw = entry[kCGWindowBounds as String], CFGetTypeID(raw as CFTypeRef) == CFDictionaryGetTypeID(),
+                  let bounds = CGRect(dictionaryRepresentation: raw as! CFDictionary) else { return nil }
+            return ListedWindow(number: number, pid: pid,
+                                layer: (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                                alpha: (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1,
+                                bounds: bounds)
+        }
+    }
+
+    /// The windows to take off the virtual display: layer 0 (menus, the Dock
+    /// and overlays have other layers), visible, with their middle on the
+    /// virtual display, and not of Moonlight or of MonitorBar. A Moonlight
+    /// window is never moved by itself: it only gets a warning.
+    static func stranded(_ windows: [ListedWindow], virtual: CGRect, moonlight: Set<pid_t>, own: pid_t) -> [ListedWindow] {
+        windows.filter { window in
+            window.layer == 0 && window.alpha > 0 && !window.bounds.isEmpty
+                && !moonlight.contains(window.pid) && window.pid != own
+                && virtual.contains(CGPoint(x: window.bounds.midX, y: window.bounds.midY))
+        }
+    }
+
+    /// The windows that get an automatic attempt now.
+    static func due(_ stranded: [ListedWindow], tried: [CGWindowID: Int]) -> [ListedWindow] {
+        stranded.filter { tried[$0.number, default: 0] < attempts }
+    }
+
+    /// The counts of the windows that still exist. A count is kept while its
+    /// window exists, also after the window left the virtual display: the
+    /// window can come back, and a count that starts again is a loop.
+    static func pruned(_ tried: [CGWindowID: Int], listed: [ListedWindow]) -> [CGWindowID: Int] {
+        let numbers = Set(listed.map(\.number))
+        return tried.filter { numbers.contains($0.key) }
+    }
+
+    /// Where the windows go: the main display (the one with the menu bar),
+    /// else the display that the virtual one sits beside.
+    static func target(main: CGDirectDisplayID, active: [DisplayInfo]) -> CGDirectDisplayID? {
+        active.first { $0.id == main && !$0.isVirtual }?.id ?? VirtualDisplay.anchor(active)
+    }
+
+    /// The window on `visible`, the usable area of the target display. It
+    /// keeps its size when that fits, and shrinks to fit when not. It keeps
+    /// its relative place: a window in the top left corner of the virtual
+    /// display goes to the top left corner, so several windows do not land
+    /// on top of each other. A window as wide as the virtual display (or
+    /// wider) is centered on that axis.
+    static func frame(window: CGRect, virtual: CGRect, visible: CGRect) -> CGRect {
+        let size = CGSize(width: min(window.width, visible.width), height: min(window.height, visible.height))
+        func share(_ offset: CGFloat, _ room: CGFloat) -> CGFloat {
+            room > 0 ? min(max(offset / room, 0), 1) : 0.5
+        }
+        let x = share(window.minX - virtual.minX, virtual.width - window.width)
+        let y = share(window.minY - virtual.minY, virtual.height - window.height)
+        return CGRect(x: (visible.minX + x * (visible.width - size.width)).rounded(),
+                      y: (visible.minY + y * (visible.height - size.height)).rounded(),
+                      width: size.width, height: size.height)
+    }
+
+    /// True when an Accessibility frame is the listed window. The two lists
+    /// can round a fraction of a point differently.
+    static func matches(_ frame: CGRect, _ bounds: CGRect) -> Bool {
+        abs(frame.minX - bounds.minX) <= 1 && abs(frame.minY - bounds.minY) <= 1
+            && abs(frame.width - bounds.width) <= 1 && abs(frame.height - bounds.height) <= 1
+    }
+}
+
+/// A window of another app (its main window, or one found by its frame), read
+/// and moved through the Accessibility API. The user must allow MonitorBar in
+/// Privacy & Security > Accessibility.
 enum AppWindow {
     /// Throws when the permission is missing, after macOS shows its request.
     /// The grant belongs to one build of the app: an ad-hoc signature changes
@@ -349,18 +448,28 @@ enum AppWindow {
     @discardableResult
     static func setFrame(pid: pid_t, _ frame: CGRect, fullScreen: Bool? = nil,
                          trace: (String) -> Void = { _ in }) throws -> CGRect {
-        let window = try mainWindow(pid)
+        try setFrame(try mainWindow(pid), fullScreen: fullScreen, trace: trace) { _ in frame }
+    }
+
+    /// The same for one window. `target` gets the frame that the window has
+    /// out of full screen and gives the new one: a window in full screen has
+    /// the frame of its display until it leaves full screen.
+    @discardableResult
+    static func setFrame(_ window: AXUIElement, fullScreen: Bool? = nil, trace: (String) -> Void = { _ in },
+                         target: (CGRect) -> CGRect) throws -> CGRect {
         // A window in native full screen has a Space of its own and refuses a
         // position. It leaves full screen, moves, and enters full screen again
         // on the display where it is then.
         let wasFullScreen = isFullScreen(window)
         var start = settledFrame(window)
-        trace("window at \(start), full screen \(wasFullScreen), target \(frame)")
+        trace("window at \(start), full screen \(wasFullScreen)")
         if wasFullScreen {
             try leaveFullScreen(window)
             start = settledFrame(window)
             trace("left full screen, window at \(start)")
         }
+        let frame = target(start)
+        trace("target \(frame)")
         // A window that still ends a transition (out of full screen, out of a
         // zoom) ignores a request and reports no error, so the frame is read
         // back and the request is sent again until the window moves.
@@ -456,6 +565,19 @@ enum AppWindow {
     // wait of about 6 s per call. A move keeps the default: a window in a full
     // screen transition can answer late, and the move was verified with it.
     static let checkTimeout: Float = 1
+
+    /// The window of `pid` whose frame is `bounds`, the frame of a listed
+    /// window. Every Accessibility call on it then waits at most `timeout`.
+    static func window(pid: pid_t, bounds: CGRect, timeout: Float) throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        for item in (copy(app, kAXWindowsAttribute) as? [AnyObject]) ?? [] where CFGetTypeID(item) == AXUIElementGetTypeID() {
+            let window = unsafeDowncast(item, to: AXUIElement.self)
+            AXUIElementSetMessagingTimeout(window, timeout)
+            if WindowRescue.matches(currentFrame(window), bounds) { return window }
+        }
+        throw DisplayToggleError(description: "no Accessibility window of the app has the frame \(bounds)")
+    }
 
     private static func mainWindow(_ pid: pid_t, timeout: Float? = nil) throws -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
