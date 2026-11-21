@@ -201,7 +201,8 @@ comes to the front, and after the virtual display moves; there is no system
 event for a new window. Each window gets 3 automatic attempts; a window that
 stays (or that its app keeps putting back) then waits until you choose *Move
 Other Windows to Main Display*, turn the virtual display on again, or a
-display is added or removed. While any window is there, the icon gets the
+display is added or removed. *Turn Off Virtual Display*, and a display that is
+added or removed, stop the moves that still run. While any window is there, the icon gets the
 warning badge and the menu says *N windows on the virtual display*, with that
 item. The move needs the Accessibility permission; without it the windows
 only get the badge and the menu shows *Allow Accessibility for Window Checks*.

@@ -269,6 +269,18 @@ check("listed: no layer is layer 0, no alpha is opaque",
       WindowRescue.listed([entry.filter { $0.key != kCGWindowLayer as String && $0.key != kCGWindowAlpha as String }]),
       [listedWindow(77, pid: 123, CGRect(x: 2700, y: 100, width: 800, height: 600))])
 
+// MARK: cancel a rescue pass
+
+let pass = CancelFlag()
+check("cancel: a new pass is not cancelled", pass.isCancelled, false)
+// The main thread cancels, and the rescue queue reads the flag.
+let cancelling = DispatchGroup()
+DispatchQueue.global().async(group: cancelling) { pass.cancel() }
+cancelling.wait()
+check("cancel: the queue sees a cancel from another thread",
+      DispatchQueue(label: "rescue").sync { pass.isCancelled }, true)
+check("cancel: the flag of the next pass is not cancelled", CancelFlag().isCancelled, false)
+
 // MARK: the private classes
 
 // Builds the request only; no CGVirtualDisplay is made, so no display appears.

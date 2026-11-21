@@ -44,11 +44,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // the grant to move them is missing.
     private var strandedWindows = 0
     private var rescueUnchecked = false
-    private var rescueRunning = false
+    // The flag of the pass on the queue, nil when no pass runs. A Turn Off and
+    // a display event cancel it: the pass stops before its next window. A
+    // pass whose flag is not this one (after a Turn Off) must not touch the
+    // new state.
+    private var rescuePass: CancelFlag?
     // A pass asked for while one runs: nil for none, else whether it is manual.
     private var rescueAgain: Bool?
-    // A pass that ends after a Turn Off must not touch the new state.
-    private var rescueGeneration = 0
     private let rescueQueue = DispatchQueue(label: "com.athosmartinez.terminal-tools.monitorbar.rescue")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -108,10 +110,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // cannot schedule the next one.
     // A display event also gives every window new rescue attempts: macOS
     // moves windows then. Never on "moved" flags, which `place` raises.
+    // It stops a pass that runs: the target frame of that pass can be on a
+    // display that changed or left.
     private func displaysChanged(_ flags: CGDisplayChangeSummaryFlags) {
         refreshIcon()
         if !flags.isDisjoint(with: [.addFlag, .removeFlag, .enabledFlag, .disabledFlag]) {
             rescueTried.removeAll()
+            rescuePass?.cancel()
             schedulePlacement()
         }
     }
@@ -222,9 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rescueTried.removeAll()
         strandedWindows = 0
         rescueUnchecked = false
-        rescueRunning = false
+        rescuePass?.cancel()
+        rescuePass = nil
         rescueAgain = nil
-        rescueGeneration += 1
     }
 
     // The windows on the virtual display now; nil when the display is off.
@@ -258,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // error, and it does not wait for the end of a drag.
     private func rescueWindows(manual: Bool = false) {
         guard virtualWanted else { return }
-        if rescueRunning {
+        if rescuePass != nil {
             rescueAgain = (rescueAgain ?? false) || manual
             return
         }
@@ -288,14 +293,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Every attempt counts, also one that moves the window: an app can
         // put the window back, and a count that a success clears is a loop.
         for window in due { rescueTried[window.number, default: 0] += 1 }
-        rescueRunning = true
-        let generation = rescueGeneration
+        let pass = CancelFlag()
+        rescuePass = pass
         let bounds = look.bounds
         rescueQueue.async { [weak self] in
-            let failures = AppDelegate.move(due, virtual: bounds, visible: visible)
+            let failures = AppDelegate.move(due, virtual: bounds, visible: visible, cancel: pass)
             DispatchQueue.main.async {
-                guard let self, generation == self.rescueGeneration else { return }
-                self.rescueRunning = false
+                guard let self, self.rescuePass === pass else { return }
+                self.rescuePass = nil
                 if manual, let last = failures.last {
                     self.showError(DisplayToggleError(description: due.count == 1
                         ? "\(last)" : "\(failures.count) of \(due.count) windows did not move: \(last)"))
@@ -316,15 +321,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Accessibility call waits at most AppWindow.checkTimeout, so an app that
     // does not answer holds the queue for some seconds, not minutes; a full
     // screen exit that answers late costs one attempt.
-    private static func move(_ windows: [ListedWindow], virtual: CGRect, visible: CGRect) -> [Error] {
+    // A cancelled pass stops before the next window and before the next
+    // frame request; a window that it did not finish is not a failure.
+    private static func move(_ windows: [ListedWindow], virtual: CGRect, visible: CGRect, cancel: CancelFlag) -> [Error] {
         var failures: [Error] = []
         for listed in windows {
+            guard !cancel.isCancelled else {
+                log.notice("rescue: pass cancelled")
+                break
+            }
             let name = "window \(listed.number) of pid \(listed.pid)"
             do {
                 let window = try AppWindow.window(pid: listed.pid, bounds: listed.bounds, timeout: AppWindow.checkTimeout)
                 // A full screen window comes back as a plain window: nobody
                 // saw it in full screen, and a window is easier to reach.
-                let result = try AppWindow.setFrame(window, fullScreen: false, trace: { step in
+                let result = try AppWindow.setFrame(window, fullScreen: false, cancelled: { cancel.isCancelled }, trace: { step in
                     log.notice("rescue \(name, privacy: .public): \(step, privacy: .public)")
                 }) { WindowRescue.frame(window: $0, virtual: virtual, visible: visible) }
                 guard !virtual.contains(CGPoint(x: result.midX, y: result.midY)) else {
@@ -332,7 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             } catch {
                 log.error("rescue \(name, privacy: .public): \(String(describing: error), privacy: .public)")
-                failures.append(error)
+                if !cancel.isCancelled { failures.append(error) }
             }
         }
         return failures

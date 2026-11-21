@@ -158,8 +158,13 @@ other people and holds nothing private:
     without an AX observer in every app — plus `didActivateApplication` and
     every successful placement. The timer is in the default run loop mode, so
     no tick runs while the menu is open; the menu only counts. Moves run on a
-    serial queue, off the main thread, with `checkTimeout` on every AX call;
-    `rescueGeneration` drops a pass that ends after Turn Off. No loop: each
+    serial queue, off the main thread, with `checkTimeout` on every AX call.
+    Each pass has a `CancelFlag` (`rescuePass`, a lock, because the queue
+    reads it): Turn Off and a display add/remove/enable/disable event cancel
+    it, and the pass stops before its next window and before the next frame
+    request in `setFrame` (the `cancelled` closure), because its target frame
+    can be stale. A cancelled window is not a failure. A pass that ends after
+    Turn Off (its flag is no longer `rescuePass`) leaves the state. No loop: each
     window number gets `WindowRescue.attempts` (3) automatic attempts, and
     every attempt counts, also a success, because an app can put the window
     back. A count stays while the window exists, also off screen (`pruned`

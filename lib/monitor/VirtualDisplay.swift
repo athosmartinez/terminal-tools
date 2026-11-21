@@ -412,6 +412,26 @@ enum WindowRescue {
     }
 }
 
+/// A flag that one thread sets and another thread reads. The main thread
+/// cancels a rescue pass; the rescue queue reads the flag before each window
+/// and before each frame request, and stops the pass.
+final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
 /// A window of another app (its main window, or one found by its frame), read
 /// and moved through the Accessibility API. The user must allow MonitorBar in
 /// Privacy & Security > Accessibility.
@@ -459,10 +479,11 @@ enum AppWindow {
 
     /// The same for one window. `target` gets the frame that the window has
     /// out of full screen and gives the new one: a window in full screen has
-    /// the frame of its display until it leaves full screen.
+    /// the frame of its display until it leaves full screen. `cancelled` is
+    /// read before each frame request: a true value ends the move with an error.
     @discardableResult
-    static func setFrame(_ window: AXUIElement, fullScreen: Bool? = nil, trace: (String) -> Void = { _ in },
-                         target: (CGRect) -> CGRect) throws -> CGRect {
+    static func setFrame(_ window: AXUIElement, fullScreen: Bool? = nil, cancelled: () -> Bool = { false },
+                         trace: (String) -> Void = { _ in }, target: (CGRect) -> CGRect) throws -> CGRect {
         // A window in native full screen has a Space of its own and refuses a
         // position. It leaves full screen, moves, and enters full screen again
         // on the display where it is then.
@@ -470,10 +491,13 @@ enum AppWindow {
         var start = settledFrame(window)
         trace("window at \(start), full screen \(wasFullScreen)")
         if wasFullScreen {
+            if cancelled() { throw moveCancelled }
             try leaveFullScreen(window)
             start = settledFrame(window)
             trace("left full screen, window at \(start)")
         }
+        // The exit from full screen takes some seconds.
+        if cancelled() { throw moveCancelled }
         let frame = target(start)
         trace("target \(frame)")
         // A window that still ends a transition (out of full screen, out of a
@@ -485,12 +509,14 @@ enum AppWindow {
             attempt += 1
             trace("the window did not move, attempt \(attempt)")
             usleep(500_000)
+            if cancelled() { throw moveCancelled }
             result = try apply(frame, to: window)
         }
         trace("window at \(result)")
         if fullScreen ?? wasFullScreen {
             // The same rule for the way into full screen.
             for _ in 0..<transitionAttempts {
+                if cancelled() { throw moveCancelled }
                 _ = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanTrue)
                 usleep(500_000)
                 if isFullScreen(window) { break }
@@ -503,6 +529,8 @@ enum AppWindow {
 
     // 6 attempts, 0.5 s apart: a full screen animation takes about 1 s.
     private static let transitionAttempts = 6
+
+    private static let moveCancelled = DisplayToggleError(description: "the move was cancelled")
 
     private static func apply(_ frame: CGRect, to window: AXUIElement) throws -> CGRect {
         var origin = frame.origin
