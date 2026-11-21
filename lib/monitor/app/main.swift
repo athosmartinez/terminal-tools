@@ -331,8 +331,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Off the main thread: a move takes some tenths of a second, seconds for
     // a full screen window, and the menu bar must not freeze. Each
     // Accessibility call waits at most AppWindow.checkTimeout, so an app that
-    // does not answer holds the queue for some seconds, not minutes; a full
-    // screen exit that answers late costs one attempt.
+    // does not answer holds the queue for some seconds; a full screen exit
+    // that answers late costs one attempt. One case is longer: a full screen
+    // window that stops answering while it leaves full screen holds the queue
+    // for about 100 s (50 checks of two calls), unless the pass is cancelled.
     // A cancelled pass stops before the next window, before each frame write
     // and in each wait of the move; a window that it did not finish is not a
     // failure.
