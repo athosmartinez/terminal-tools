@@ -175,7 +175,11 @@ other people and holds nothing private:
     menu item *Move Other Windows to Main Display* and a display
     add/remove/enable/disable event clear the counts (never "moved" flags:
     `place` raises them). A window still there gets the badge and the menu
-    line "N windows on the virtual display". The timer never asks for the
+    line "N windows on the virtual display". A pass draws the icon again only
+    when the count or the grant state differs from what the icon shows
+    (`shownRescue`, set by `refreshIcon`), also before it goes to the queue:
+    a comparison with the start of the pass missed the badge when
+    `rescueAgain` started the next pass with the new count. The timer never asks for the
     grant (`AXIsProcessTrusted`, no prompt); only the menu item does.
     A tick is skipped while a mouse button is down (a drag).
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and

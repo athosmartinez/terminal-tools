@@ -44,6 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // the grant to move them is missing.
     private var strandedWindows = 0
     private var rescueUnchecked = false
+    // The two values above as the icon shows them, set by refreshIcon.
+    private var shownRescue = (stranded: 0, unchecked: false)
     // The flag of the pass on the queue, nil when no pass runs. A Turn Off and
     // a display event cancel it: the pass stops before its next window. A
     // pass whose flag is not this one (after a Turn Off) must not touch the
@@ -276,10 +278,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // A window that the user drags is in the user's hand.
         guard manual || NSEvent.pressedMouseButtons == 0 else { return }
-        // The icon reads the display state: only when the count changes.
-        let before = (strandedWindows, rescueUnchecked)
+        // The icon reads the display state: only when it shows another count.
+        // The comparison is with the icon, not with the start of this pass:
+        // a pass that runs again (rescueAgain) starts with the new count.
         func refreshIfChanged() {
-            if (strandedWindows, rescueUnchecked) != before { refreshIcon() }
+            if (strandedWindows, rescueUnchecked) != shownRescue { refreshIcon() }
         }
         guard let look = lookForStranded() else {
             refreshIfChanged()
@@ -303,6 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let pass = CancelFlag()
         rescuePass = pass
         let bounds = look.bounds
+        // The windows are there while the pass runs, and it can fail.
+        refreshIfChanged()
         rescueQueue.async { [weak self] in
             let failures = AppDelegate.move(due, virtual: bounds, visible: visible, cancel: pass)
             DispatchQueue.main.async {
@@ -438,6 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         image?.isTemplate = true
         statusItem.button?.image = image
         statusItem.button?.appearsDisabled = state == .absent && !warning
+        shownRescue = (strandedWindows, rescueUnchecked)
     }
 
     // Rebuilt on every open so the labels always match the current state.
