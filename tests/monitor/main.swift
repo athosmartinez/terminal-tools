@@ -218,9 +218,9 @@ check("stranded: a Moonlight window is never a candidate, also when it is not th
 check("due: a window with attempts left", WindowRescue.due([editor], tried: [1: 2]).map(\.number), [1])
 check("due: a window that used its attempts waits for a reset", WindowRescue.due([editor], tried: [1: 3]), [])
 check("due: a new window", WindowRescue.due([editor], tried: [:]).map(\.number), [1])
-check("pruned: the count of a window that left the virtual display stays",
-      WindowRescue.pruned([1: 1, 2: 3], listed: windows), [1: 1, 2: 3])
-check("pruned: the count of a window that is gone goes", WindowRescue.pruned([1: 1, 42: 3], listed: windows), [1: 1])
+check("pruned: the count of a window that left the virtual display or the screen stays",
+      WindowRescue.pruned([1: 1, 2: 3], existing: [1, 2, 5]), [1: 1, 2: 3])
+check("pruned: the count of a window that is gone goes", WindowRescue.pruned([1: 1, 42: 3], existing: [1, 2]), [1: 1])
 
 check("target: the main display", WindowRescue.target(main: 1, active: [builtin, monitor, virtual]), 1)
 check("target: the anchor when the menu bar is on the virtual display",

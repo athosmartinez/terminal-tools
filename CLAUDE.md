@@ -162,7 +162,9 @@ other people and holds nothing private:
     `rescueGeneration` drops a pass that ends after Turn Off. No loop: each
     window number gets `WindowRescue.attempts` (3) automatic attempts, and
     every attempt counts, also a success, because an app can put the window
-    back. A count stays while the window exists (`pruned`); Turn On, the
+    back. A count stays while the window exists, also off screen (`pruned`
+    against `WindowRescue.existing`, the `.optionAll` numbers: a membership
+    test only, so its hidden windows do no harm); Turn On, the
     menu item *Move Other Windows to Main Display* and a display
     add/remove/enable/disable event clear the counts (never "moved" flags:
     `place` raises them). A window still there gets the badge and the menu

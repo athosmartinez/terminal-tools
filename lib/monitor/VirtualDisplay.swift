@@ -366,12 +366,18 @@ enum WindowRescue {
         stranded.filter { tried[$0.number, default: 0] < attempts }
     }
 
+    /// The number of every window that exists, also off screen (minimized,
+    /// hidden, on another Space). Only for `pruned`: this list also holds
+    /// hidden helper windows, which must never count as stranded.
+    static func existing() -> Set<CGWindowID> {
+        Set(listed(CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []).map(\.number))
+    }
+
     /// The counts of the windows that still exist. A count is kept while its
-    /// window exists, also after the window left the virtual display: the
-    /// window can come back, and a count that starts again is a loop.
-    static func pruned(_ tried: [CGWindowID: Int], listed: [ListedWindow]) -> [CGWindowID: Int] {
-        let numbers = Set(listed.map(\.number))
-        return tried.filter { numbers.contains($0.key) }
+    /// window exists, also after the window left the virtual display or the
+    /// screen: the window can come back, and a count that starts again is a loop.
+    static func pruned(_ tried: [CGWindowID: Int], existing: Set<CGWindowID>) -> [CGWindowID: Int] {
+        tried.filter { existing.contains($0.key) }
     }
 
     /// Where the windows go: the main display (the one with the menu bar),

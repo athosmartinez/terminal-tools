@@ -227,10 +227,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rescueGeneration += 1
     }
 
-    // The windows on the virtual display now, and the whole list; nil when
-    // the display is off. It sets the count for the badge and the menu.
+    // The windows on the virtual display now; nil when the display is off.
+    // It sets the count for the badge and the menu.
     @discardableResult
-    private func lookForStranded() -> (bounds: CGRect, listed: [ListedWindow], stranded: [ListedWindow])? {
+    private func lookForStranded() -> (bounds: CGRect, stranded: [ListedWindow])? {
         guard virtual.isOn, let id = virtual.displayID else {
             strandedWindows = 0
             rescueUnchecked = false
@@ -243,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Silent: AXIsProcessTrustedWithOptions with the prompt would show
         // the system request at every tick.
         rescueUnchecked = !stranded.isEmpty && !AXIsProcessTrusted()
-        return (bounds, listed, stranded)
+        return (bounds, stranded)
     }
 
     // The usable area of the display that the windows go to.
@@ -268,7 +268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             refreshIcon()
             return
         }
-        rescueTried = WindowRescue.pruned(rescueTried, listed: look.listed)
+        // The full list only when a count is kept: it is the longer one.
+        if !rescueTried.isEmpty { rescueTried = WindowRescue.pruned(rescueTried, existing: WindowRescue.existing()) }
         let due = WindowRescue.due(look.stranded, tried: rescueTried)
         guard !due.isEmpty, !rescueUnchecked else {
             refreshIcon()
