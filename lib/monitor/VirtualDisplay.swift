@@ -515,7 +515,7 @@ enum AppWindow {
         // position. It leaves full screen, moves, and enters full screen again
         // on the display where it is then.
         let wasFullScreen = isFullScreen(window)
-        // A read that fails throws here, before a target is computed from it.
+        // A wait with no valid read throws here, before a target is computed from it.
         var start = try settledFrame(window)
         trace("window at \(start), full screen \(wasFullScreen)")
         if wasFullScreen {
@@ -586,17 +586,41 @@ enum AppWindow {
     }
 
     // A frame change and a full screen change are animations. The frame is
-    // settled when two reads, 150 ms apart, agree; the wait ends after 3 s.
-    // A read that fails ends the wait with an error.
+    // settled when two reads, 150 ms apart, agree. A read can fail for a
+    // moment while the window leaves full screen, so it is read again.
     private static func settledFrame(_ window: AXUIElement) throws -> CGRect {
-        var last = try currentFrame(window)
-        for _ in 0..<20 {
-            usleep(150_000)
-            let now = try currentFrame(window)
-            if now == last { return now }
-            last = now
+        try settled { try currentFrame(window) }
+    }
+
+    /// The frame at rest: two valid reads one after the other that agree. A
+    /// read that throws is skipped, and the next valid read is compared with
+    /// the last valid one; a failed read is never a frame, because two frames
+    /// of zeros looked like a window at rest. The wait ends after `tries`
+    /// reads or `time` seconds from the first read, with the last valid read;
+    /// with no valid read it throws the error of the last read. The time limit
+    /// is there because a read that does not answer waits for the AX timeout.
+    static func settled(tries: Int = 21, time: TimeInterval = 3,
+                        now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                        pause: () -> Void = { _ = usleep(150_000) },
+                        read: () throws -> CGRect) throws -> CGRect {
+        let start = now()
+        var last: CGRect?
+        var failure: Error?
+        for attempt in 0..<tries {
+            if attempt > 0 {
+                if now() - start >= time { break }
+                pause()
+            }
+            do {
+                let frame = try read()
+                if frame == last { return frame }
+                last = frame
+            } catch {
+                failure = error
+            }
         }
-        return last
+        if let last { return last }
+        throw failure ?? DisplayToggleError(description: "cannot read the window frame")
     }
 
     // AppKit has no constant for it.

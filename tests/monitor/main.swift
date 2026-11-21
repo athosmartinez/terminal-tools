@@ -279,6 +279,44 @@ check("size: the rescue frame of a window with no size has none",
       AppWindow.hasSize(WindowRescue.frame(window: CGRect(x: 0, y: 0, width: 0, height: 0), virtual: virtualBounds,
                                            visible: mainVisible)), false)
 
+// MARK: a frame at rest
+
+let frameA = CGRect(x: 2700, y: 100, width: 800, height: 600)
+let frameB = CGRect(x: 0, y: 25, width: 800, height: 600)
+let frameC = CGRect(x: 100, y: 125, width: 1024, height: 768)
+var fakeClock: TimeInterval = 0
+var fakeReads = 0
+
+/// Settles fake reads in order; nil is a read that fails, and so is a read
+/// past the end of the list. Each read takes `readTime` and each pause 0.15 s
+/// on a fake clock, so nothing sleeps and no window is read.
+func settle(_ reads: [CGRect?], tries: Int = 21, readTime: TimeInterval = 0) throws -> CGRect {
+    fakeClock = 0
+    fakeReads = 0
+    return try AppWindow.settled(tries: tries, now: { fakeClock }, pause: { fakeClock += 0.15 }) {
+        let index = fakeReads
+        fakeReads += 1
+        fakeClock += readTime
+        guard index < reads.count, let frame = reads[index] else {
+            throw DisplayToggleError(description: "cannot read the window frame")
+        }
+        return frame
+    }
+}
+
+check("settle: failed reads are read again until two reads agree", try? settle([nil, nil, frameA, frameA]), frameA)
+check("settle: a failed read between two equal reads", try? settle([frameA, nil, frameA]), frameA)
+check("settle: a failed read keeps the last valid read", try? settle([frameA, nil, frameB, frameB]), frameB)
+check("settle: the window moves, then rests", try? settle([frameA, frameB, frameB]), frameB)
+check("settle: no two equal reads gives the last valid read", try? settle([frameA, frameB, frameC], tries: 3), frameC)
+check("settle: the last valid read, also when the last reads fail",
+      try? settle([frameA, frameB, nil, nil], tries: 4), frameB)
+check("settle: no valid read is an error, not a frame of zeros", failure { try settle([]) }, "cannot read the window frame")
+check("settle: the reads stop after the tries", fakeReads, 21)
+check("settle: reads that wait for the AX timeout stop after about 3 s",
+      failure { try settle([], readTime: 2) }, "cannot read the window frame")
+check("settle: two timed out reads, not 21", fakeReads, 2)
+
 let entry: [String: Any] = [
     kCGWindowNumber as String: NSNumber(value: 77),
     kCGWindowOwnerPID as String: NSNumber(value: 123),

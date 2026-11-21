@@ -197,12 +197,18 @@ other people and holds nothing private:
     is settable, moves, and sets it to true again on the new display. A window
     that still ends a transition (out of full screen, out of a zoom) ignores
     a frame request and reports success — this made the move work "sometimes".
-    So `setFrame` reads the frame back (`settledFrame`: two equal reads 150 ms
-    apart; a failed read of the position or the size is an error,
-    `AppWindow.frame(position:size:)`, never a frame of zeros: two failed reads
-    looked settled, and the rescue then asked for a 0x0 window; a target with
-    no size is never applied, `hasSize`; the frame match of `AppWindow.window`
-    skips a window that does not answer) and sends the request again, up to 6 times 0.5 s apart, also for
+    So `setFrame` reads the frame back (`settledFrame`: two equal valid reads
+    150 ms apart, the pure rule `AppWindow.settled`; a failed read of the
+    position or the size is an error, `AppWindow.frame(position:size:)`, never
+    a frame of zeros: two failed reads looked settled, and the rescue then
+    asked for a 0x0 window. A failed read is skipped and read again within the
+    wait, 21 reads or 3 s, because a read fails for a moment while a window
+    leaves full screen: an error at once ended the Moonlight move. Only a wait
+    with no valid read throws; with no two equal reads the last valid read is
+    the result. The 3 s count because a read that does not answer waits for
+    the AX timeout; a target with no size is never applied, `hasSize`; the
+    frame match of `AppWindow.window` skips a window that does not answer) and
+    sends the request again, up to 6 times 0.5 s apart, also for
     the way back into full screen; the app checks that the result is on the
     wanted display and shows an error if not. Each step goes to the log
     (`moonlight <pid>: …`, subsystem `…monitorbar`). On the virtual display
