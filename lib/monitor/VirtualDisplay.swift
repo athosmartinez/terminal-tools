@@ -471,15 +471,26 @@ enum AppWindow {
     /// The frame in global coordinates: y grows down from the top of the main display.
     /// `timeout` is the wait for each AX call in seconds; nil keeps the default.
     static func frame(pid: pid_t, timeout: Float? = nil) throws -> CGRect {
-        let window = try mainWindow(pid, timeout: timeout)
+        try currentFrame(mainWindow(pid, timeout: timeout))
+    }
+
+    /// The frame from the two Accessibility values. A value that the read did
+    /// not give (nil, the call failed or timed out) or that has another type
+    /// is an error. A frame of zeros in its place looks like a window with no
+    /// size, and two failed reads look like a window that is at rest.
+    static func frame(position: AXValue?, size: AXValue?) throws -> CGRect {
         var origin = CGPoint.zero
-        var size = CGSize.zero
-        guard let position = value(window, kAXPositionAttribute), AXValueGetValue(position, .cgPoint, &origin),
-              let extent = value(window, kAXSizeAttribute), AXValueGetValue(extent, .cgSize, &size) else {
+        var extent = CGSize.zero
+        guard let position, AXValueGetValue(position, .cgPoint, &origin),
+              let size, AXValueGetValue(size, .cgSize, &extent) else {
             throw DisplayToggleError(description: "cannot read the window frame")
         }
-        return CGRect(origin: origin, size: size)
+        return CGRect(origin: origin, size: extent)
     }
+
+    /// True when a frame can be asked for: a window with no width or no
+    /// height is never the goal of a move.
+    static func hasSize(_ frame: CGRect) -> Bool { frame.width > 0 && frame.height > 0 }
 
     static func isFullScreen(pid: pid_t) throws -> Bool { isFullScreen(try mainWindow(pid)) }
 
@@ -504,18 +515,22 @@ enum AppWindow {
         // position. It leaves full screen, moves, and enters full screen again
         // on the display where it is then.
         let wasFullScreen = isFullScreen(window)
-        var start = settledFrame(window)
+        // A read that fails throws here, before a target is computed from it.
+        var start = try settledFrame(window)
         trace("window at \(start), full screen \(wasFullScreen)")
         if wasFullScreen {
             if cancelled() { throw moveCancelled }
             try leaveFullScreen(window)
-            start = settledFrame(window)
+            start = try settledFrame(window)
             trace("left full screen, window at \(start)")
         }
         // The exit from full screen takes some seconds.
         if cancelled() { throw moveCancelled }
         let frame = target(start)
         trace("target \(frame)")
+        guard hasSize(frame) else {
+            throw DisplayToggleError(description: "the target frame \(frame) has no size")
+        }
         // A window that still ends a transition (out of full screen, out of a
         // zoom) ignores a request and reports no error, so the frame is read
         // back and the request is sent again until the window moves.
@@ -537,7 +552,7 @@ enum AppWindow {
                 usleep(500_000)
                 if isFullScreen(window) { break }
             }
-            result = settledFrame(window)
+            result = try settledFrame(window)
             trace("full screen \(isFullScreen(window)), window at \(result)")
         }
         return result
@@ -563,24 +578,21 @@ enum AppWindow {
             throw DisplayToggleError(description: "cannot move the window (AXError \(err.rawValue))")
         }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
-        return settledFrame(window)
+        return try settledFrame(window)
     }
 
-    private static func currentFrame(_ window: AXUIElement) -> CGRect {
-        var origin = CGPoint.zero
-        var size = CGSize.zero
-        if let position = value(window, kAXPositionAttribute) { AXValueGetValue(position, .cgPoint, &origin) }
-        if let extent = value(window, kAXSizeAttribute) { AXValueGetValue(extent, .cgSize, &size) }
-        return CGRect(origin: origin, size: size)
+    private static func currentFrame(_ window: AXUIElement) throws -> CGRect {
+        try frame(position: value(window, kAXPositionAttribute), size: value(window, kAXSizeAttribute))
     }
 
     // A frame change and a full screen change are animations. The frame is
     // settled when two reads, 150 ms apart, agree; the wait ends after 3 s.
-    private static func settledFrame(_ window: AXUIElement) -> CGRect {
-        var last = currentFrame(window)
+    // A read that fails ends the wait with an error.
+    private static func settledFrame(_ window: AXUIElement) throws -> CGRect {
+        var last = try currentFrame(window)
         for _ in 0..<20 {
             usleep(150_000)
-            let now = currentFrame(window)
+            let now = try currentFrame(window)
             if now == last { return now }
             last = now
         }
@@ -624,7 +636,8 @@ enum AppWindow {
         for item in (copy(app, kAXWindowsAttribute) as? [AnyObject]) ?? [] where CFGetTypeID(item) == AXUIElementGetTypeID() {
             let window = unsafeDowncast(item, to: AXUIElement.self)
             AXUIElementSetMessagingTimeout(window, timeout)
-            if WindowRescue.matches(currentFrame(window), bounds) { return window }
+            // A window that does not answer is not the match; another can be.
+            if let frame = try? currentFrame(window), WindowRescue.matches(frame, bounds) { return window }
         }
         throw DisplayToggleError(description: "no Accessibility window of the app has the frame \(bounds)")
     }

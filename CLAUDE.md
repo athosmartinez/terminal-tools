@@ -194,7 +194,11 @@ other people and holds nothing private:
     that still ends a transition (out of full screen, out of a zoom) ignores
     a frame request and reports success — this made the move work "sometimes".
     So `setFrame` reads the frame back (`settledFrame`: two equal reads 150 ms
-    apart) and sends the request again, up to 6 times 0.5 s apart, also for
+    apart; a failed read of the position or the size is an error,
+    `AppWindow.frame(position:size:)`, never a frame of zeros: two failed reads
+    looked settled, and the rescue then asked for a 0x0 window; a target with
+    no size is never applied, `hasSize`; the frame match of `AppWindow.window`
+    skips a window that does not answer) and sends the request again, up to 6 times 0.5 s apart, also for
     the way back into full screen; the app checks that the result is on the
     wanted display and shows an error if not. Each step goes to the log
     (`moonlight <pid>: …`, subsystem `…monitorbar`). On the virtual display

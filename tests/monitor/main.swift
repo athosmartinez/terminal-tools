@@ -3,6 +3,7 @@
 // tests/monitor.test.sh compiles this file with the core sources. Nothing here
 // lists, creates or changes a display: the displays are fakes.
 
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -259,6 +260,24 @@ check("matches: a fraction of a point apart",
       WindowRescue.matches(CGRect(x: 2700.5, y: 99.5, width: 800, height: 600.5), editor.bounds), true)
 check("matches: another window of the same size",
       WindowRescue.matches(CGRect(x: 2720, y: 100, width: 800, height: 600), editor.bounds), false)
+
+// Plain values, as an Accessibility read gives them; no window is read.
+var axOrigin = CGPoint(x: 2700, y: 100), axSize = CGSize(width: 800, height: 600)
+let axPosition = AXValueCreate(.cgPoint, &axOrigin), axExtent = AXValueCreate(.cgSize, &axSize)
+check("AX frame: a position and a size", try? AppWindow.frame(position: axPosition, size: axExtent), editor.bounds)
+check("AX frame: a failed position read is an error, not the origin 0, 0",
+      failure { try AppWindow.frame(position: nil, size: axExtent) }, "cannot read the window frame")
+check("AX frame: a failed size read is an error, not a window of 0x0",
+      failure { try AppWindow.frame(position: axPosition, size: nil) }, "cannot read the window frame")
+check("AX frame: a value of the other type is an error",
+      failure { try AppWindow.frame(position: axExtent, size: axPosition) }, "cannot read the window frame")
+check("size: a window frame has a size", AppWindow.hasSize(editor.bounds), true)
+check("size: no width or no height is never asked for",
+      [AppWindow.hasSize(CGRect(x: 0, y: 25, width: 0, height: 600)), AppWindow.hasSize(CGRect(x: 0, y: 25, width: 800, height: 0))],
+      [false, false])
+check("size: the rescue frame of a window with no size has none",
+      AppWindow.hasSize(WindowRescue.frame(window: CGRect(x: 0, y: 0, width: 0, height: 0), virtual: virtualBounds,
+                                           visible: mainVisible)), false)
 
 let entry: [String: Any] = [
     kCGWindowNumber as String: NSNumber(value: 77),
