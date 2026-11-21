@@ -333,8 +333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Accessibility call waits at most AppWindow.checkTimeout, so an app that
     // does not answer holds the queue for some seconds, not minutes; a full
     // screen exit that answers late costs one attempt.
-    // A cancelled pass stops before the next window and before the next
-    // frame request; a window that it did not finish is not a failure.
+    // A cancelled pass stops before the next window, before each frame write
+    // and in each wait of the move; a window that it did not finish is not a
+    // failure.
     private static func move(_ windows: [ListedWindow], virtual: CGRect, visible: CGRect, cancel: CancelFlag) -> [Error] {
         var failures: [Error] = []
         for listed in windows {
@@ -344,7 +345,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             let name = "window \(listed.number) of pid \(listed.pid)"
             do {
-                let window = try AppWindow.window(pid: listed.pid, bounds: listed.bounds, timeout: AppWindow.checkTimeout)
+                let window = try AppWindow.window(pid: listed.pid, bounds: listed.bounds, timeout: AppWindow.checkTimeout,
+                                                  cancelled: { cancel.isCancelled })
                 // A full screen window comes back as a plain window: nobody
                 // saw it in full screen, and a window is easier to reach.
                 let result = try AppWindow.setFrame(window, fullScreen: false, cancelled: { cancel.isCancelled }, trace: { step in

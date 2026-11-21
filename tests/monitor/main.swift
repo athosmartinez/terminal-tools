@@ -290,10 +290,11 @@ var fakeReads = 0
 /// Settles fake reads in order; nil is a read that fails, and so is a read
 /// past the end of the list. Each read takes `readTime` and each pause 0.15 s
 /// on a fake clock, so nothing sleeps and no window is read.
-func settle(_ reads: [CGRect?], tries: Int = 21, readTime: TimeInterval = 0) throws -> CGRect {
+func settle(_ reads: [CGRect?], tries: Int = 21, readTime: TimeInterval = 0,
+            cancelled: () -> Bool = { false }) throws -> CGRect {
     fakeClock = 0
     fakeReads = 0
-    return try AppWindow.settled(tries: tries, now: { fakeClock }, pause: { fakeClock += 0.15 }) {
+    return try AppWindow.settled(tries: tries, cancelled: cancelled, now: { fakeClock }, pause: { fakeClock += 0.15 }) {
         let index = fakeReads
         fakeReads += 1
         fakeClock += readTime
@@ -316,6 +317,10 @@ check("settle: the reads stop after the tries", fakeReads, 21)
 check("settle: reads that wait for the AX timeout stop after about 3 s",
       failure { try settle([], readTime: 2) }, "cannot read the window frame")
 check("settle: two timed out reads, not 21", fakeReads, 2)
+check("settle: a cancel stops the wait", failure { try settle([], cancelled: { fakeReads >= 2 }) }, "the move was cancelled")
+check("settle: no read after the cancel", fakeReads, 2)
+check("settle: two equal reads end the wait before a cancel is read",
+      try? settle([frameA, frameA], cancelled: { fakeReads >= 2 }), frameA)
 
 let entry: [String: Any] = [
     kCGWindowNumber as String: NSNumber(value: 77),

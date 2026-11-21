@@ -166,8 +166,13 @@ other people and holds nothing private:
     it, and the pass stops before its next window and before the next frame
     request in `setFrame` (the `cancelled` closure), also between the size,
     position and size writes of one request, because its target frame can be
-    stale. A cancelled window is not a failure. A pass that ends after
-    Turn Off (its flag is no longer `rescuePass`) leaves the state. No loop: each
+    stale. The same closure stops each wait of the move: the full screen exit
+    (up to 50 checks), `settled` and the frame match in `AppWindow.window`.
+    Each AX call there can wait the 1 s `checkTimeout`, so without it a
+    cancelled pass held the serial queue for about 100 s, and a Turn On
+    waited for it. The Moonlight move passes no closure (`{ false }`). A
+    cancelled window is not a failure. A pass that ends after Turn Off (its
+    flag is no longer `rescuePass`) leaves the state. No loop: each
     window number gets `WindowRescue.attempts` (3) automatic attempts, and
     every attempt counts, also a success, because an app can put the window
     back. A count stays while the window exists, also off screen (`pruned`

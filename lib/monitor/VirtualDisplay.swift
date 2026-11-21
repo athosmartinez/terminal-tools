@@ -507,8 +507,8 @@ enum AppWindow {
     /// The same for one window. `target` gets the frame that the window has
     /// out of full screen and gives the new one: a window in full screen has
     /// the frame of its display until it leaves full screen. `cancelled` is
-    /// read before each frame request and before each of its writes: a true
-    /// value ends the move with an error.
+    /// read before each frame request, before each of its writes and in each
+    /// wait: a true value ends the move with an error.
     @discardableResult
     static func setFrame(_ window: AXUIElement, fullScreen: Bool? = nil, cancelled: () -> Bool = { false },
                          trace: (String) -> Void = { _ in }, target: (CGRect) -> CGRect) throws -> CGRect {
@@ -517,12 +517,12 @@ enum AppWindow {
         // on the display where it is then.
         let wasFullScreen = isFullScreen(window)
         // A wait with no valid read throws here, before a target is computed from it.
-        var start = try settledFrame(window)
+        var start = try settledFrame(window, cancelled: cancelled)
         trace("window at \(start), full screen \(wasFullScreen)")
         if wasFullScreen {
             if cancelled() { throw moveCancelled }
-            try leaveFullScreen(window)
-            start = try settledFrame(window)
+            try leaveFullScreen(window, cancelled: cancelled)
+            start = try settledFrame(window, cancelled: cancelled)
             trace("left full screen, window at \(start)")
         }
         // The exit from full screen takes some seconds.
@@ -553,7 +553,7 @@ enum AppWindow {
                 usleep(500_000)
                 if isFullScreen(window) { break }
             }
-            result = try settledFrame(window)
+            result = try settledFrame(window, cancelled: cancelled)
             trace("full screen \(isFullScreen(window)), window at \(result)")
         }
         return result
@@ -585,7 +585,7 @@ enum AppWindow {
         }
         if cancelled() { throw moveCancelled }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
-        return try settledFrame(window)
+        return try settledFrame(window, cancelled: cancelled)
     }
 
     private static func currentFrame(_ window: AXUIElement) throws -> CGRect {
@@ -595,8 +595,8 @@ enum AppWindow {
     // A frame change and a full screen change are animations. The frame is
     // settled when two reads, 150 ms apart, agree. A read can fail for a
     // moment while the window leaves full screen, so it is read again.
-    private static func settledFrame(_ window: AXUIElement) throws -> CGRect {
-        try settled { try currentFrame(window) }
+    private static func settledFrame(_ window: AXUIElement, cancelled: () -> Bool) throws -> CGRect {
+        try settled(cancelled: cancelled) { try currentFrame(window) }
     }
 
     /// The frame at rest: two valid reads one after the other that agree. A
@@ -606,7 +606,8 @@ enum AppWindow {
     /// reads or `time` seconds from the first read, with the last valid read;
     /// with no valid read it throws the error of the last read. The time limit
     /// is there because a read that does not answer waits for the AX timeout.
-    static func settled(tries: Int = 21, time: TimeInterval = 3,
+    /// `cancelled` is read before each pause: a true value throws.
+    static func settled(tries: Int = 21, time: TimeInterval = 3, cancelled: () -> Bool = { false },
                         now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                         pause: () -> Void = { _ = usleep(150_000) },
                         read: () throws -> CGRect) throws -> CGRect {
@@ -616,6 +617,7 @@ enum AppWindow {
         for attempt in 0..<tries {
             if attempt > 0 {
                 if now() - start >= time { break }
+                if cancelled() { throw moveCancelled }
                 pause()
             }
             do {
@@ -638,13 +640,16 @@ enum AppWindow {
     }
 
     // Leaving full screen is an animation: the call returns at once, and the
-    // window takes a position only when the animation ends.
-    private static func leaveFullScreen(_ window: AXUIElement) throws {
+    // window takes a position only when the animation ends. `cancelled` is
+    // read before each check: with the rescue's 1 s timeout, 50 checks of two
+    // calls each can hold the queue for about 100 s.
+    private static func leaveFullScreen(_ window: AXUIElement, cancelled: () -> Bool) throws {
         let err = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanFalse)
         guard err == .success else {
             throw DisplayToggleError(description: "cannot take the window out of full screen (AXError \(err.rawValue))")
         }
         for _ in 0..<50 {
+            if cancelled() { throw moveCancelled }
             usleep(100_000)
             var settable: DarwinBoolean = false
             _ = AXUIElementIsAttributeSettable(window, kAXPositionAttribute as CFString, &settable)
@@ -661,10 +666,13 @@ enum AppWindow {
 
     /// The window of `pid` whose frame is `bounds`, the frame of a listed
     /// window. Every Accessibility call on it then waits at most `timeout`.
-    static func window(pid: pid_t, bounds: CGRect, timeout: Float) throws -> AXUIElement {
+    /// `cancelled` is read before each window: each read can wait `timeout`.
+    static func window(pid: pid_t, bounds: CGRect, timeout: Float,
+                       cancelled: () -> Bool = { false }) throws -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, timeout)
         for item in (copy(app, kAXWindowsAttribute) as? [AnyObject]) ?? [] where CFGetTypeID(item) == AXUIElementGetTypeID() {
+            if cancelled() { throw moveCancelled }
             let window = unsafeDowncast(item, to: AXUIElement.self)
             AXUIElementSetMessagingTimeout(window, timeout)
             // A window that does not answer is not the match; another can be.
