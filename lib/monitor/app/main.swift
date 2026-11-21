@@ -264,20 +264,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // A window that the user drags is in the user's hand.
         guard manual || NSEvent.pressedMouseButtons == 0 else { return }
+        // The icon reads the display state: only when the count changes.
+        let before = (strandedWindows, rescueUnchecked)
+        func refreshIfChanged() {
+            if (strandedWindows, rescueUnchecked) != before { refreshIcon() }
+        }
         guard let look = lookForStranded() else {
-            refreshIcon()
+            refreshIfChanged()
             return
         }
         // The full list only when a count is kept: it is the longer one.
         if !rescueTried.isEmpty { rescueTried = WindowRescue.pruned(rescueTried, existing: WindowRescue.existing()) }
         let due = WindowRescue.due(look.stranded, tried: rescueTried)
         guard !due.isEmpty, !rescueUnchecked else {
-            refreshIcon()
+            refreshIfChanged()
             return
         }
         guard let visible = rescueTarget() else {
             if manual { showError(DisplayToggleError(description: "no real display is active")) }
-            refreshIcon()
+            refreshIfChanged()
             return
         }
         // Every attempt counts, also one that moves the window: an app can
