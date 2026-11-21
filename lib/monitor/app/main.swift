@@ -21,6 +21,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Where each Moonlight window was before it went to the virtual display,
     // and if it was in full screen there.
     private var moonlightHome: [pid_t: (frame: CGRect, fullScreen: Bool)] = [:]
+    // True from Turn On to Turn Off. The app can lose the display without the
+    // user: with no real display active it turns the display off, and it
+    // turns it on again when a real display comes back.
+    private var virtualWanted = false
+    // The Moonlight processes that the user sent to the virtual display, and
+    // whether one of their windows is not there now.
+    private var moonlightOnVirtual: Set<pid_t> = []
+    private var moonlightLeft = false
+    // Tracked windows that cannot be checked: no Accessibility grant (it is
+    // dropped silently after every rebuild, and Open Moonlight needs none).
+    private var moonlightUnchecked = false
+    private var pendingMoonlightCheck: DispatchWorkItem?
+    // The app recreates a display that WindowServer dropped once per chain of
+    // failed placements; a display that is never listed must not cycle.
+    private var recreatedVirtual = false
+    // The rescue of other apps' windows from the virtual display (WindowRescue).
+    private var rescueTimer: Timer?
+    // Automatic attempts per window number, kept while the window exists.
+    private var rescueTried: [CGWindowID: Int] = [:]
+    // Windows that are on the virtual display at the last look, and whether
+    // the grant to move them is missing.
+    private var strandedWindows = 0
+    private var rescueUnchecked = false
+    // The two values above as the icon shows them, set by refreshIcon.
+    private var shownRescue = (stranded: 0, unchecked: false)
+    // The flag of the pass on the queue, nil when no pass runs. A Turn Off and
+    // a display event cancel it: the pass stops before its next window. A
+    // pass whose flag is not this one (after a Turn Off) must not touch the
+    // new state.
+    private var rescuePass: CancelFlag?
+    // A pass asked for while one runs: nil for none, else whether it is manual.
+    private var rescueAgain: Bool?
+    private let rescueQueue = DispatchQueue(label: "com.athosmartinez.terminal-tools.monitorbar.rescue")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menu.delegate = self
@@ -42,7 +75,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
             workspace.addObserver(self, selector: #selector(noteWake), name: name, object: nil)
         }
+        workspace.addObserver(self, selector: #selector(noteQuit(_:)),
+                              name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        // An app that comes to the front can open or restore a window.
+        workspace.addObserver(self, selector: #selector(noteActivate),
+                              name: NSWorkspace.didActivateApplicationNotification, object: nil)
     }
+
+    @objc private func noteActivate() { rescueWindows() }
 
     // The virtual display lives in this process, so it must go with it.
     func applicationWillTerminate(_ notification: Notification) { virtual.turnOff() }
@@ -50,34 +90,286 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // The arrangement can change over a sleep with no display added or removed.
     @objc private func noteWake() {
         lastWake = Date()
+        // A wake is a system event, never the app's own, so a new recreate
+        // cannot start a cycle.
+        recreatedVirtual = false
         schedulePlacement()
+    }
+
+    // A tracked Moonlight that quits must not keep the warning.
+    @objc private func noteQuit(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.bundleIdentifier == Moonlight.bundleID else { return }
+        // The list of running apps can still hold it now, and a pid with no
+        // window counts as left.
+        moonlightOnVirtual.remove(app.processIdentifier)
+        moonlightHome[app.processIdentifier] = nil
+        checkMoonlight()
     }
 
     // The anchor of the virtual display can appear or go (cable, `monitor
     // off`, lid). Moving the display raises only "moved" flags, so a placement
     // cannot schedule the next one.
+    // A display event also gives every window new rescue attempts: macOS
+    // moves windows then. Never on "moved" flags, which `place` raises.
+    // It stops a pass that runs: the target frame of that pass can be on a
+    // display that changed or left.
     private func displaysChanged(_ flags: CGDisplayChangeSummaryFlags) {
         refreshIcon()
-        if !flags.isDisjoint(with: [.addFlag, .removeFlag, .enabledFlag, .disabledFlag]) { schedulePlacement() }
+        if !flags.isDisjoint(with: [.addFlag, .removeFlag, .enabledFlag, .disabledFlag]) {
+            rescueTried.removeAll()
+            rescuePass?.cancel()
+            schedulePlacement()
+        }
     }
 
     // One attempt after the last event: a change of displays arrives as a
     // burst of callbacks, and WindowServer lists a new display a moment late.
-    private func schedulePlacement() {
-        guard virtual.displayID != nil else { return }
+    private func schedulePlacement(attempt: Int = 1) {
+        guard virtualWanted else { return }
         pendingPlacement?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.placeVirtual() }
+        let work = DispatchWorkItem { [weak self] in self?.placeVirtual(attempt: attempt) }
         pendingPlacement = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
+    // A plug or unplug takes some seconds to settle, and the virtual display
+    // can be out of the list for all of them.
+    private static let placementAttempts = 8
+
     // Silent like the cable restore: it also runs with nobody at the menu.
-    private func placeVirtual() {
+    private func placeVirtual(attempt: Int) {
+        let config = MonitorConfig.load()
+        var placed = false
         do {
-            try virtual.place(MonitorConfig.load())
+            guard virtual.displayID != nil else {
+                // Off since no real display was active (lid closed, sleep).
+                guard VirtualDisplay.anchor(try DisplayToggle.displays(online: false)) != nil else { return }
+                try virtual.turnOn(config)
+                log.notice("virtual display: on again \(DisplayToggle.summary(), privacy: .public)")
+                schedulePlacement()
+                return
+            }
+            placed = try virtual.place(config)
         } catch {
             log.error("virtual display: \(String(describing: error), privacy: .public)")
         }
+        if placed {
+            recreatedVirtual = false
+            scheduleMoonlightCheck()
+            rescueWindows()
+        } else {
+            // A false result and an error get the same attempts and the same
+            // last step (VirtualDisplay.afterFailedPlacement).
+            switch VirtualDisplay.afterFailedPlacement(attempt: attempt, attempts: Self.placementAttempts,
+                                                       exists: virtual.displayID != nil, recreated: recreatedVirtual) {
+            case .again:
+                schedulePlacement(attempt: attempt + 1)
+            case .recreate:
+                // WindowServer can drop the display and leave the object, and
+                // its return sends no event: a new object comes back listed.
+                log.notice("virtual display: not placed after \(attempt, privacy: .public) attempts, made again \(DisplayToggle.summary(), privacy: .public)")
+                recreatedVirtual = true
+                virtual.turnOff()
+                schedulePlacement()
+            case .stop:
+                // With no object, `place` released it (no real display) and
+                // logged why.
+                if virtual.displayID != nil {
+                    log.error("virtual display: not placed after \(attempt, privacy: .public) attempts \(DisplayToggle.summary(), privacy: .public)")
+                }
+            }
+        }
+        refreshIcon()
+    }
+
+    // The window moves with the display, but its AX frame and a new window
+    // arrive a moment later; a read at once can be stale.
+    private func scheduleMoonlightCheck(after delay: TimeInterval = 2) {
+        pendingMoonlightCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.checkMoonlight() }
+        pendingMoonlightCheck = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    // Only a warning: the user moves the window with the menu, so a window
+    // never jumps to a display that nobody sees while the user works in it.
+    private func checkMoonlight() {
+        let running = Set(moonlightPIDs)
+        moonlightOnVirtual.formIntersection(running)
+        var left = false
+        var unchecked = false
+        if !moonlightOnVirtual.isEmpty, let id = virtual.displayID, virtual.isOn {
+            if AXIsProcessTrusted() {
+                let bounds = CGDisplayBounds(id)
+                left = moonlightOnVirtual.contains {
+                    Moonlight.leftVirtual(window: try? AppWindow.frame(pid: $0, timeout: AppWindow.checkTimeout), virtual: bounds)
+                }
+            } else {
+                unchecked = true
+            }
+        }
+        if left != moonlightLeft {
+            log.notice("moonlight: \(left ? "left" : "back on", privacy: .public) the virtual display")
+        }
+        moonlightLeft = left
+        moonlightUnchecked = unchecked
+        refreshIcon()
+    }
+
+    // MARK: windows of other apps on the virtual display
+
+    // No event tells that a window opened or moved, short of an observer in
+    // every app, so a timer looks while the virtual display is wanted. A tick
+    // is one window list, and nothing more while no window is on the display.
+    // The default run loop mode: no tick while the menu is open.
+    private func startRescue() {
+        rescueTimer?.invalidate()
+        rescueTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.rescueWindows()
+        }
+    }
+
+    private func stopRescue() {
+        rescueTimer?.invalidate()
+        rescueTimer = nil
+        rescueTried.removeAll()
+        strandedWindows = 0
+        rescueUnchecked = false
+        rescuePass?.cancel()
+        rescuePass = nil
+        rescueAgain = nil
+    }
+
+    // The windows on the virtual display now; nil when the display is off.
+    // It sets the count for the badge and the menu.
+    @discardableResult
+    private func lookForStranded() -> (bounds: CGRect, stranded: [ListedWindow])? {
+        guard virtual.isOn, let id = virtual.displayID else {
+            strandedWindows = 0
+            rescueUnchecked = false
+            return nil
+        }
+        let bounds = CGDisplayBounds(id)
+        let listed = WindowRescue.onScreen()
+        let stranded = WindowRescue.stranded(listed, virtual: bounds, moonlight: Set(moonlightPIDs), own: getpid())
+        strandedWindows = stranded.count
+        // Silent: AXIsProcessTrustedWithOptions with the prompt would show
+        // the system request at every tick.
+        rescueUnchecked = !stranded.isEmpty && !AXIsProcessTrusted()
+        return (bounds, stranded)
+    }
+
+    // The usable area of the display that the windows go to.
+    private func rescueTarget() -> CGRect? {
+        guard let active = try? DisplayToggle.displays(online: false),
+              let id = WindowRescue.target(main: CGMainDisplayID(), active: active) else { return nil }
+        return visibleFrame(of: id)
+    }
+
+    // One pass: the windows that have attempts left move to the main display.
+    // `manual` is the menu item: it shows the request for the grant and an
+    // error, and it does not wait for the end of a drag.
+    private func rescueWindows(manual: Bool = false) {
+        guard virtualWanted else { return }
+        if rescuePass != nil {
+            rescueAgain = (rescueAgain ?? false) || manual
+            return
+        }
+        // A window that the user drags is in the user's hand.
+        guard manual || NSEvent.pressedMouseButtons == 0 else { return }
+        // The icon reads the display state: only when it shows another count.
+        // The comparison is with the icon, not with the start of this pass:
+        // a pass that runs again (rescueAgain) starts with the new count.
+        func refreshIfChanged() {
+            if (strandedWindows, rescueUnchecked) != shownRescue { refreshIcon() }
+        }
+        guard let look = lookForStranded() else {
+            refreshIfChanged()
+            return
+        }
+        // The full list only when a count is kept: it is the longer one.
+        if !rescueTried.isEmpty { rescueTried = WindowRescue.pruned(rescueTried, existing: WindowRescue.existing()) }
+        let due = WindowRescue.due(look.stranded, tried: rescueTried)
+        guard !due.isEmpty, !rescueUnchecked else {
+            refreshIfChanged()
+            return
+        }
+        guard let visible = rescueTarget() else {
+            if manual { showError(DisplayToggleError(description: "no real display is active")) }
+            refreshIfChanged()
+            return
+        }
+        // Every attempt counts, also one that moves the window: an app can
+        // put the window back, and a count that a success clears is a loop.
+        for window in due { rescueTried[window.number, default: 0] += 1 }
+        let pass = CancelFlag()
+        rescuePass = pass
+        let bounds = look.bounds
+        // The windows are there while the pass runs, and it can fail.
+        refreshIfChanged()
+        rescueQueue.async { [weak self] in
+            let failures = AppDelegate.move(due, virtual: bounds, visible: visible, cancel: pass)
+            DispatchQueue.main.async {
+                guard let self, self.rescuePass === pass else { return }
+                self.rescuePass = nil
+                if manual, let last = failures.last {
+                    self.showError(DisplayToggleError(description: due.count == 1
+                        ? "\(last)" : "\(failures.count) of \(due.count) windows did not move: \(last)"))
+                }
+                if let again = self.rescueAgain {
+                    self.rescueAgain = nil
+                    self.rescueWindows(manual: again)
+                } else {
+                    self.lookForStranded()
+                    self.refreshIcon()
+                }
+            }
+        }
+    }
+
+    // Off the main thread: a move takes some tenths of a second, seconds for
+    // a full screen window, and the menu bar must not freeze. Each
+    // Accessibility call waits at most AppWindow.checkTimeout, so an app that
+    // does not answer holds the queue for some seconds; a full screen exit
+    // that answers late costs one attempt. One case is longer: a full screen
+    // window that stops answering while it leaves full screen holds the queue
+    // for about 100 s (50 checks of two calls), unless the pass is cancelled.
+    // A cancelled pass stops before the next window, before each frame write
+    // and in each wait of the move; a window that it did not finish is not a
+    // failure.
+    private static func move(_ windows: [ListedWindow], virtual: CGRect, visible: CGRect, cancel: CancelFlag) -> [Error] {
+        var failures: [Error] = []
+        for listed in windows {
+            guard !cancel.isCancelled else {
+                log.notice("rescue: pass cancelled")
+                break
+            }
+            let name = "window \(listed.number) of pid \(listed.pid)"
+            do {
+                let window = try AppWindow.window(pid: listed.pid, bounds: listed.bounds, timeout: AppWindow.checkTimeout,
+                                                  cancelled: { cancel.isCancelled })
+                // A full screen window comes back as a plain window: nobody
+                // saw it in full screen, and a window is easier to reach.
+                let result = try AppWindow.setFrame(window, fullScreen: false, cancelled: { cancel.isCancelled }, trace: { step in
+                    log.notice("rescue \(name, privacy: .public): \(step, privacy: .public)")
+                }) { WindowRescue.frame(window: $0, virtual: virtual, visible: visible) }
+                guard !virtual.contains(CGPoint(x: result.midX, y: result.midY)) else {
+                    throw DisplayToggleError(description: "the app kept its window on the virtual display")
+                }
+            } catch {
+                log.error("rescue \(name, privacy: .public): \(String(describing: error), privacy: .public)")
+                if !cancel.isCancelled { failures.append(error) }
+            }
+        }
+        return failures
+    }
+
+    // The menu item: every window gets its attempts again.
+    @objc private func rescueWindowsNow() {
+        do { try AppWindow.requireAccess() } catch { showError(error); return }
+        rescueTried.removeAll()
+        rescueWindows(manual: true)
     }
 
     // macOS creates this service when a USB-C port enters DisplayPort mode, so
@@ -146,16 +438,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshIcon() {
         let state = DisplayToggle.state()
-        let image = NSImage(systemSymbolName: state == .on ? "display" : "tv.slash",
-                            accessibilityDescription: "External display")
+        let warning = moonlightLeft || moonlightUnchecked || strandedWindows > 0
+        let image = warning
+            ? NSImage(systemSymbolName: "display.trianglebadge.exclamationmark",
+                      accessibilityDescription: "The virtual display needs attention")
+            : NSImage(systemSymbolName: state == .on ? "display" : "tv.slash",
+                      accessibilityDescription: "External display")
         image?.isTemplate = true
         statusItem.button?.image = image
-        statusItem.button?.appearsDisabled = state == .absent
+        statusItem.button?.appearsDisabled = state == .absent && !warning
+        shownRescue = (strandedWindows, rescueUnchecked)
     }
 
     // Rebuilt on every open so the labels always match the current state.
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        checkMoonlight()
+        // A count only: a move here would hold the menu.
+        lookForStranded()
+        refreshIcon()
         let state = DisplayToggle.state()
 
         let header: String
@@ -199,25 +500,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = "Virtual display: \(Int(bounds.width))x\(Int(bounds.height)) at \(Int(bounds.minX)), \(Int(bounds.minY))"
         menu.addItem(withTitle: header, action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(withTitle: "Turn Off Virtual Display", action: #selector(toggleVirtual), keyEquivalent: "").target = self
+        if strandedWindows > 0 {
+            let count = strandedWindows == 1 ? "1 window" : "\(strandedWindows) windows"
+            menu.addItem(withTitle: "\(count) on the virtual display", action: nil, keyEquivalent: "").isEnabled = false
+            menu.addItem(withTitle: "Move Other Windows to Main Display", action: #selector(rescueWindowsNow), keyEquivalent: "").target = self
+        }
+        if moonlightUnchecked || rescueUnchecked {
+            menu.addItem(withTitle: "Allow Accessibility for Window Checks", action: #selector(askAccessibility), keyEquivalent: "").target = self
+        }
         // A Moonlight that runs keeps its stream, and its window moves. With
         // no Moonlight, the item starts a stream on the display.
         if moonlightPIDs.isEmpty {
             menu.addItem(withTitle: "Open Moonlight on Virtual Display", action: #selector(openMoonlight), keyEquivalent: "").target = self
         } else {
+            if moonlightLeft {
+                menu.addItem(withTitle: "Moonlight left the virtual display", action: nil, keyEquivalent: "").isEnabled = false
+            }
             menu.addItem(withTitle: "Move Moonlight to Virtual Display", action: #selector(moveMoonlightToVirtual), keyEquivalent: "").target = self
             menu.addItem(withTitle: "Move Moonlight to Main Display", action: #selector(moveMoonlightToMain), keyEquivalent: "").target = self
         }
     }
 
+    // macOS shows its own request; the error text says what to do when the
+    // list has a stale entry from an earlier build.
+    @objc private func askAccessibility() {
+        do { try AppWindow.requireAccess() } catch { showError(error) }
+    }
+
     @objc private func toggleVirtual() {
         if virtual.isOn {
             virtual.turnOff()
+            virtualWanted = false
+            pendingPlacement?.cancel()
+            pendingMoonlightCheck?.cancel()
             // macOS moves the windows back by itself, to places of its choice.
             moonlightHome.removeAll()
+            moonlightOnVirtual.removeAll()
+            moonlightLeft = false
+            moonlightUnchecked = false
+            stopRescue()
+            refreshIcon()
             return
         }
         do {
             try virtual.turnOn(MonitorConfig.load())
+            virtualWanted = true
+            recreatedVirtual = false
+            rescueTried.removeAll()
+            startRescue()
             schedulePlacement()
         } catch {
             showError(error)
@@ -240,9 +570,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.arguments = arguments
             configuration.createsNewApplicationInstance = true
-            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] _, error in
-                guard let error else { return }
-                DispatchQueue.main.async { self?.showError(error) }
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
+                DispatchQueue.main.async {
+                    if let error { self?.showError(error) }
+                    // A Turn Off can come before the launch ends.
+                    guard let self, let pid = app?.processIdentifier, self.virtualWanted else { return }
+                    self.moonlightOnVirtual.insert(pid)
+                    // The stream window opens some seconds after the launch.
+                    self.scheduleMoonlightCheck(after: 5)
+                }
             }
         } catch {
             showError(error)
@@ -316,10 +652,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // to the remote screen with no dead border.
                 return (Moonlight.frame(onVirtual: bounds, visible: visible, window: frame,
                                         current: displays.first { $0.contains(middle) }), true)
-            }, arrived: { bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) })
+            }, arrived: { bounds.contains(CGPoint(x: $0.midX, y: $0.midY)) },
+               moved: { moonlightOnVirtual.insert($0) })
         } catch {
             showError(error)
         }
+        checkMoonlight()
     }
 
     @objc private func moveMoonlightToMain() {
@@ -340,10 +678,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return (goal, goal == frame ? nil : home?.fullScreen)
             }, arrived: { frame in
                 real.contains { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) }
-            }, moved: { moonlightHome[$0] = nil })
+            }, moved: {
+                moonlightHome[$0] = nil
+                moonlightOnVirtual.remove($0)
+            })
         } catch {
             showError(error)
         }
+        checkMoonlight()
     }
 
     @objc private func toggleDisplay() {

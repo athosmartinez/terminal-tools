@@ -66,7 +66,8 @@ other people and holds nothing private:
   `monitor app` rebuilds `~/Applications/MonitorBar.app` (Info.plist with
   `LSUIElement`, ad-hoc `codesign` required by `SMAppService`) and relaunches
   it. Both compile with `-swift-version 5`. The app refreshes its icon from
-  `CGDisplayRegisterReconfigurationCallback`, never by polling. The app also
+  `CGDisplayRegisterReconfigurationCallback`, never by polling (the one
+  timer is the window rescue: no event tells that a window opened). The app also
   restores an off display when a cable connects: the trigger is a new
   `IOPortTransportStateDisplayPort` (IOKit match). `.addFlag` cannot do it: a
   disabled display drops out of the online list too and sends no add event on
@@ -112,7 +113,81 @@ other people and holds nothing private:
     cannot loop. Anchor = the external monitor, else the built-in panel; it
     gives y, and x is past every real display on that side, so the virtual
     display never lands on one. With no real display active `place` turns the
-    virtual display off.
+    virtual display off; the app keeps `virtualWanted` and turns it on again
+    when a placement finds a real display (lid opened, wake). While a monitor
+    is plugged in or out, WindowServer leaves the virtual display out of the
+    active list for a moment: `place` returns false and the app tries again,
+    up to 8 times 1 s apart (one try gave "not active" and left it there); a
+    thrown error is retried the same way (`VirtualDisplay.afterFailedPlacement`,
+    one rule for both). `place` checks for a real display
+    before it checks the list, because both can be missing at once. After the
+    last failed try, a false result or an error, the app releases the object
+    and makes a new display (`recreatedVirtual`); an error with no object
+    left (no real display: `place` released it) stops at once. WindowServer can drop the display, keep the object,
+    and send no event when it returns. Only once until a placement succeeds,
+    a Turn On or a wake: a display event cannot reset it, because the new
+    display's own add event would start a cycle of about 9 s.
+  - After a placement the app checks the Moonlight windows that the user sent
+    to the virtual display (`moonlightOnVirtual`): macOS moves them off a
+    display that leaves the list and never back. It does not move them (the
+    owner's choice): the icon gets a warning badge and the menu says
+    "Moonlight left the virtual display" above the *Move* items. A window that
+    AX cannot find counts as left (`Moonlight.leftVirtual`). The check runs 2 s
+    after a placement (the AX frame comes late), 5 s after Open Moonlight,
+    at menu open and when a Moonlight quits. Without the Accessibility grant
+    the badge shows too, with the item *Allow Accessibility for Window
+    Checks*. The check's AX calls have a 1 s timeout
+    (`AppWindow.checkTimeout`, `AXUIElementSetMessagingTimeout`): it runs on
+    the main thread at every menu open. A move keeps the default wait: a
+    window in a full screen transition can answer late.
+  - Window rescue (`WindowRescue` in `VirtualDisplay.swift`, the pure rules;
+    `rescueWindows` in the app): a window of another app whose middle is on
+    the virtual display moves to `CGMainDisplayID`, else the anchor
+    (`WindowRescue.target`), at the same relative place, shrunk only when it
+    does not fit the visible frame (`WindowRescue.frame`). A full screen
+    window leaves full screen and stays a plain window. Moonlight (its pids
+    from `Moonlight.bundleID`) and MonitorBar are never moved; `moonlight_app=`
+    names the app on the remote host, so it has no local window. Detection is
+    `CGWindowListCopyWindowInfo(.optionOnScreenOnly)`, layer 0, alpha > 0, and
+    needs no grant. `.optionAll` is not usable: every app has hidden layer 0
+    windows on every display (title bar strips, 500x500 placeholders), so all
+    apps would count. The cost: a window on a Space that the virtual display
+    does not show (its desktop Space behind a full screen Moonlight) is not
+    seen. The move matches the CG window to an AX window of its pid by frame
+    (`AppWindow.window`, 1 pt tolerance) and runs `AppWindow.setFrame` on it.
+    Trigger: a 2 s `Timer` from Turn On to Turn Off — the one exception to
+    "never by polling", because no event tells that a window opened or moved
+    without an AX observer in every app — plus `didActivateApplication` and
+    every successful placement. The timer is in the default run loop mode, so
+    no tick runs while the menu is open; the menu only counts. Moves run on a
+    serial queue, off the main thread, with `checkTimeout` on every AX call.
+    Each pass has a `CancelFlag` (`rescuePass`, a lock, because the queue
+    reads it): Turn Off and a display add/remove/enable/disable event cancel
+    it, and the pass stops before its next window and before the next frame
+    request in `setFrame` (the `cancelled` closure), also between the size,
+    position and size writes of one request, because its target frame can be
+    stale. The same closure stops each wait of the move: the full screen exit
+    (up to 50 checks), `settled` and the frame match in `AppWindow.window`.
+    Each AX call there can wait the 1 s `checkTimeout`, so without it a
+    cancelled pass held the serial queue for about 100 s, and a Turn On
+    waited for it. The Moonlight move passes no closure (`{ false }`). A
+    cancelled window is not a failure. A pass that ends after Turn Off (its
+    flag is no longer `rescuePass`) leaves the state. No loop: each
+    window number gets `WindowRescue.attempts` (3) automatic attempts, and
+    every attempt counts, also a success, because an app can put the window
+    back. A count stays while the window exists, also off screen (`pruned`
+    against `WindowRescue.existing`, the `.optionAll` numbers: a membership
+    test only, so its hidden windows do no harm); Turn On, the
+    menu item *Move Other Windows to Main Display* and a display
+    add/remove/enable/disable event clear the counts (never "moved" flags:
+    `place` raises them). A window still there gets the badge and the menu
+    line "N windows on the virtual display". A pass draws the icon again only
+    when the count or the grant state differs from what the icon shows
+    (`shownRescue`, set by `refreshIcon`), also before it goes to the queue:
+    a comparison with the start of the pass missed the badge when
+    `rescueAgain` started the next pass with the new count. The timer never asks for the
+    grant (`AXIsProcessTrusted`, no prompt); only the menu item does.
+    A tick is skipped while a mouse button is down (a drag).
   - Moonlight starts through `NSWorkspace.openApplication` with arguments and
     `createsNewApplicationInstance` (a child `Process` would run under
     MonitorBar's privacy permissions). Qt's `-qwindowgeometry +x+y` moves the
@@ -128,8 +203,18 @@ other people and holds nothing private:
     is settable, moves, and sets it to true again on the new display. A window
     that still ends a transition (out of full screen, out of a zoom) ignores
     a frame request and reports success — this made the move work "sometimes".
-    So `setFrame` reads the frame back (`settledFrame`: two equal reads 150 ms
-    apart) and sends the request again, up to 6 times 0.5 s apart, also for
+    So `setFrame` reads the frame back (`settledFrame`: two equal valid reads
+    150 ms apart, the pure rule `AppWindow.settled`; a failed read of the
+    position or the size is an error, `AppWindow.frame(position:size:)`, never
+    a frame of zeros: two failed reads looked settled, and the rescue then
+    asked for a 0x0 window. A failed read is skipped and read again within the
+    wait, 21 reads or 3 s, because a read fails for a moment while a window
+    leaves full screen: an error at once ended the Moonlight move. Only a wait
+    with no valid read throws; with no two equal reads the last valid read is
+    the result. The 3 s count because a read that does not answer waits for
+    the AX timeout; a target with no size is never applied, `hasSize`; the
+    frame match of `AppWindow.window` skips a window that does not answer) and
+    sends the request again, up to 6 times 0.5 s apart, also for
     the way back into full screen; the app checks that the result is on the
     wanted display and shows an error if not. Each step goes to the log
     (`moonlight <pid>: …`, subsystem `…monitorbar`). On the virtual display
