@@ -142,6 +142,22 @@ final class VirtualDisplay {
         return CGPoint(x: x, y: anchor.minY + CGFloat(y))
     }
 
+    /// What the app does after a placement that failed.
+    enum PlacementRetry: Equatable { case again, recreate, stop }
+
+    /// The failure is a false result of `place` (the display is not in the
+    /// active list yet) or an error (WindowServer can refuse a configuration
+    /// while it settles); both get the same attempts. `exists` is false when
+    /// `place` released the object because no real display is active: there
+    /// is nothing to retry. After the last attempt the app makes the display
+    /// again, once (`recreated`): WindowServer can drop the display and keep
+    /// the object, and a new object comes back listed.
+    static func afterFailedPlacement(attempt: Int, attempts: Int, exists: Bool, recreated: Bool) -> PlacementRetry {
+        guard exists else { return .stop }
+        if attempt < attempts { return .again }
+        return recreated ? .stop : .recreate
+    }
+
     // macOS uses the physical size only to choose a default scale. 92 pixels
     // per inch is a 24-inch 1080p panel, which gets no scaling.
     static func millimeters(width: Int, height: Int) -> CGSize {

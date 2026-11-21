@@ -138,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Silent like the cable restore: it also runs with nobody at the menu.
     private func placeVirtual(attempt: Int) {
         let config = MonitorConfig.load()
+        var placed = false
         do {
             guard virtual.displayID != nil else {
                 // Off since no real display was active (lid closed, sleep).
@@ -147,28 +148,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 schedulePlacement()
                 return
             }
-            if try virtual.place(config) {
-                recreatedVirtual = false
-                scheduleMoonlightCheck()
-                rescueWindows()
-            } else if attempt < Self.placementAttempts {
+            placed = try virtual.place(config)
+        } catch {
+            log.error("virtual display: \(String(describing: error), privacy: .public)")
+        }
+        if placed {
+            recreatedVirtual = false
+            scheduleMoonlightCheck()
+            rescueWindows()
+        } else {
+            // A false result and an error get the same attempts and the same
+            // last step (VirtualDisplay.afterFailedPlacement).
+            switch VirtualDisplay.afterFailedPlacement(attempt: attempt, attempts: Self.placementAttempts,
+                                                       exists: virtual.displayID != nil, recreated: recreatedVirtual) {
+            case .again:
                 schedulePlacement(attempt: attempt + 1)
-            } else if !recreatedVirtual {
+            case .recreate:
                 // WindowServer can drop the display and leave the object, and
                 // its return sends no event: a new object comes back listed.
-                log.notice("virtual display: not active after \(attempt, privacy: .public) attempts, made again \(DisplayToggle.summary(), privacy: .public)")
+                log.notice("virtual display: not placed after \(attempt, privacy: .public) attempts, made again \(DisplayToggle.summary(), privacy: .public)")
                 recreatedVirtual = true
                 virtual.turnOff()
                 schedulePlacement()
-            } else {
-                log.error("virtual display: not active after \(attempt, privacy: .public) attempts \(DisplayToggle.summary(), privacy: .public)")
-            }
-        } catch {
-            log.error("virtual display: \(String(describing: error), privacy: .public)")
-            // WindowServer can refuse a configuration while it settles. With
-            // no real display, `place` released the object: nothing to retry.
-            if virtual.displayID != nil, attempt < Self.placementAttempts {
-                schedulePlacement(attempt: attempt + 1)
+            case .stop:
+                // With no object, `place` released it (no real display) and
+                // logged why.
+                if virtual.displayID != nil {
+                    log.error("virtual display: not placed after \(attempt, privacy: .public) attempts \(DisplayToggle.summary(), privacy: .public)")
+                }
             }
         }
         refreshIcon()

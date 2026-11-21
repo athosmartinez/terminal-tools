@@ -117,6 +117,14 @@ check("right: past a display that is already on that side, y still from the anch
                             real: [CGRect(x: 0, y: 0, width: 1710, height: 1107), CGRect(x: -2560, y: -200, width: 2560, height: 1440)],
                             width: 1920, side: .right, y: 10),
       CGPoint(x: 1710, y: -190))
+check("retry: a false result or an error before the last attempt tries again",
+      VirtualDisplay.afterFailedPlacement(attempt: 3, attempts: 8, exists: true, recreated: false), .again)
+check("retry: a failure on the last attempt makes the display again",
+      VirtualDisplay.afterFailedPlacement(attempt: 8, attempts: 8, exists: true, recreated: false), .recreate)
+check("retry: only once until a placement succeeds",
+      VirtualDisplay.afterFailedPlacement(attempt: 8, attempts: 8, exists: true, recreated: true), .stop)
+check("retry: an error with no object left stops, also before the last attempt",
+      VirtualDisplay.afterFailedPlacement(attempt: 1, attempts: 8, exists: false, recreated: false), .stop)
 check("physical size of 1920x1080 is a 24-inch panel",
       VirtualDisplay.millimeters(width: 1920, height: 1080), CGSize(width: 530, height: 298))
 
