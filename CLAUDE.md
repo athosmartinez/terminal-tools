@@ -164,8 +164,9 @@ other people and holds nothing private:
     Each pass has a `CancelFlag` (`rescuePass`, a lock, because the queue
     reads it): Turn Off and a display add/remove/enable/disable event cancel
     it, and the pass stops before its next window and before the next frame
-    request in `setFrame` (the `cancelled` closure), because its target frame
-    can be stale. A cancelled window is not a failure. A pass that ends after
+    request in `setFrame` (the `cancelled` closure), also between the size,
+    position and size writes of one request, because its target frame can be
+    stale. A cancelled window is not a failure. A pass that ends after
     Turn Off (its flag is no longer `rescuePass`) leaves the state. No loop: each
     window number gets `WindowRescue.attempts` (3) automatic attempts, and
     every attempt counts, also a success, because an app can put the window

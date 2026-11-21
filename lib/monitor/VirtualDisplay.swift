@@ -507,7 +507,8 @@ enum AppWindow {
     /// The same for one window. `target` gets the frame that the window has
     /// out of full screen and gives the new one: a window in full screen has
     /// the frame of its display until it leaves full screen. `cancelled` is
-    /// read before each frame request: a true value ends the move with an error.
+    /// read before each frame request and before each of its writes: a true
+    /// value ends the move with an error.
     @discardableResult
     static func setFrame(_ window: AXUIElement, fullScreen: Bool? = nil, cancelled: () -> Bool = { false },
                          trace: (String) -> Void = { _ in }, target: (CGRect) -> CGRect) throws -> CGRect {
@@ -534,14 +535,14 @@ enum AppWindow {
         // A window that still ends a transition (out of full screen, out of a
         // zoom) ignores a request and reports no error, so the frame is read
         // back and the request is sent again until the window moves.
-        var result = try apply(frame, to: window)
+        var result = try apply(frame, to: window, cancelled: cancelled)
         var attempt = 1
         while result.origin == start.origin, start.origin != frame.origin, attempt < transitionAttempts {
             attempt += 1
             trace("the window did not move, attempt \(attempt)")
             usleep(500_000)
             if cancelled() { throw moveCancelled }
-            result = try apply(frame, to: window)
+            result = try apply(frame, to: window, cancelled: cancelled)
         }
         trace("window at \(result)")
         if fullScreen ?? wasFullScreen {
@@ -563,7 +564,10 @@ enum AppWindow {
 
     private static let moveCancelled = DisplayToggleError(description: "the move was cancelled")
 
-    private static func apply(_ frame: CGRect, to window: AXUIElement) throws -> CGRect {
+    // `cancelled` is read before each of the three writes: each one can wait
+    // for the AX timeout, and a cancel during the first one must not move the
+    // window to a target that is stale.
+    private static func apply(_ frame: CGRect, to window: AXUIElement, cancelled: () -> Bool) throws -> CGRect {
         var origin = frame.origin
         var size = frame.size
         guard let position = AXValueCreate(.cgPoint, &origin), let extent = AXValueCreate(.cgSize, &size) else {
@@ -572,11 +576,14 @@ enum AppWindow {
         // Size, position, size: macOS cuts a window that grows past the edge of
         // its current display, so the size is set again on the new display. A
         // window of fixed size refuses the size, and that is not an error.
+        if cancelled() { throw moveCancelled }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
+        if cancelled() { throw moveCancelled }
         let err = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
         guard err == .success else {
             throw DisplayToggleError(description: "cannot move the window (AXError \(err.rawValue))")
         }
+        if cancelled() { throw moveCancelled }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
         return try settledFrame(window)
     }
