@@ -39,6 +39,11 @@ esac
 
 find_real() {
   if [[ -n $override ]]; then
+    # An override that names the shim itself would exec it again and again.
+    if [[ $override -ef $0 ]]; then
+      echo "agent-shim: the override for $prog points to this shim, not to the real $prog" >&2
+      return
+    fi
     echo "$override"
     return
   fi
@@ -69,7 +74,8 @@ case $provider in
   codex) var=CODEX_HOME ;;
   cursor) var=CURSOR_API_KEY ;;
 esac
-[[ -n ${!var:-} ]] && run_real
+# Set at all, even empty, means the caller chose: CLAUDE_CONFIG_DIR= is ~/.claude.
+[[ -n ${!var+x} ]] && run_real
 [[ -n ${AGENT_ACCOUNT+x} && -z $AGENT_ACCOUNT ]] && run_real
 
 self=$0
@@ -115,6 +121,9 @@ if [[ $provider == cursor ]]; then
   run_real
 fi
 
-aa_refresh "$provider" "$home"
+if ! aa_refresh "$provider" "$home"; then
+  echo "agent-shim: could not prepare the $provider account home $home" >&2
+  exit 1
+fi
 export "$var=$home"
 run_real

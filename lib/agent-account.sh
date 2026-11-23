@@ -27,7 +27,8 @@ aa_valid_provider() {
 # ^[a-z0-9][a-z0-9._-]{0,31}$, and not "default".
 aa_valid_name() {
   local name=${1:-}
-  [[ $name == default ]] && return 1
+  # default is the normal home; active and accounts.json are registry files.
+  case $name in default | active | accounts.json) return 1 ;; esac
   [[ ${#name} -ge 1 && ${#name} -le 32 ]] || return 1
   [[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 }
@@ -133,7 +134,8 @@ aa_link_entries() {
     name=${entry##*/}
     aa_excluded "$provider" "$name" && continue
     [[ -e $home/$name || -L $home/$name ]] && continue
-    ln -s "$shared/$name" "$home/$name" 2>/dev/null
+    # A missing link would run the agent without that shared entry (hooks, skills).
+    ln -s "$shared/$name" "$home/$name" 2>/dev/null || return 1
   done
   return 0
 }
@@ -180,14 +182,14 @@ aa_claude_sync_mcp() {
 aa_refresh() {
   local provider=$1 home=$2
   [[ $provider == cursor ]] && return 0
-  aa_link_entries "$provider" "$home"
+  aa_link_entries "$provider" "$home" || return 1
   if [[ $provider == claude ]]; then
     if ! command -v jq >/dev/null 2>&1; then
       echo "agent-account: jq not found; $home/.claude.json is not updated" >&2
       return 0
     fi
-    aa_claude_seed "$home"
-    aa_claude_sync_mcp "$home"
+    aa_claude_seed "$home" || return 1
+    aa_claude_sync_mcp "$home" || return 1
   fi
   return 0
 }

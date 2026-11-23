@@ -5,7 +5,8 @@
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd -P)
-WORK=$(mktemp -d)
+WORK=$(mktemp -d) || { echo "cannot create a temp dir: no test runs" >&2; exit 1; }
+[[ -d $WORK ]] || exit 1
 trap 'rm -rf "$WORK"' EXIT
 
 unset CLAUDE_CONFIG_DIR CODEX_HOME CURSOR_API_KEY CURSOR_CONFIG_DIR AGENT_ACCOUNT
@@ -200,6 +201,10 @@ check_eq "shim: a preset CLAUDE_CONFIG_DIR passes through" \
   "real-claude CLAUDE_CONFIG_DIR=/preset args=" "$(CLAUDE_CONFIG_DIR=/preset claude)"
 check_eq "shim: a preset CODEX_HOME passes through" \
   "real-codex CODEX_HOME=/preset args=" "$(CODEX_HOME=/preset codex)"
+check_eq "shim: an empty but set CLAUDE_CONFIG_DIR passes through, whatever AGENT_ACCOUNT says" \
+  "real-claude CLAUDE_CONFIG_DIR= args=" "$(CLAUDE_CONFIG_DIR= AGENT_ACCOUNT=ghost claude)"
+AGENT_ACCOUNT_REAL_CLAUDE=$WORK/shims/claude claude >/dev/null 2>&1
+check_eq "shim: an override that points to the shim itself is refused" 127 $?
 check_eq "shim: AGENT_ACCOUNT= (empty) runs unchanged" \
   "real-claude CLAUDE_CONFIG_DIR=<unset> args=" "$(AGENT_ACCOUNT= claude)"
 check_eq "shim: AGENT_ACCOUNT=default runs unchanged" \
@@ -344,6 +349,24 @@ if [[ $(uname -s) == Darwin ]]; then
 fi
 "$AA" remove claude work --yes >/dev/null 2>&1
 check_eq "remove of a missing account exits 1" 1 $?
+
+"$AA" add claude active >/dev/null 2>&1
+check_eq "add rejects the registry name active" 1 $?
+"$AA" add claude accounts.json >/dev/null 2>&1
+check_eq "add rejects the registry name accounts.json" 1 $?
+"$AA" add codex empty >/dev/null 2>&1
+: > "$A/codex/empty/auth.json"
+check_eq "list keeps an account whose login file is empty" "empty false" \
+  "$("$AA" list --json | jq -r '.codex.accounts[] | select(.id == "empty") | "\(.id) \(.logged_in)"')"
+"$AA" remove codex empty --yes >/dev/null 2>&1
+"$AA" add claude broken >/dev/null 2>&1
+chmod 500 "$A/claude/broken"
+touch "$HOME/.claude/entry-after-chmod"
+"$AA" add claude broken >/dev/null 2>&1
+check_eq "add fails when the home cannot be prepared" 1 $?
+chmod 700 "$A/claude/broken"
+"$AA" remove claude broken --yes >/dev/null 2>&1
+rm -f "$HOME/.claude/entry-after-chmod"
 
 # --- install.sh ------------------------------------------------------------------
 

@@ -155,9 +155,15 @@ account_json() {
       filter="$head"' + {email: ($m.label // null), logged_in: $logged, account_id: null}'
       ;;
   esac
-  if [[ -n $file && -r $file ]] &&
-    jq -c --arg name "$name" --arg home "$home" --argjson meta "$meta" --argjson logged "$logged" \
-      "$filter" "$file" 2>/dev/null; then
+  # An empty or broken login file gives no object: fall back to the one below,
+  # so the account still shows in the list.
+  local out=""
+  if [[ -n $file && -r $file ]]; then
+    out=$(jq -c --arg name "$name" --arg home "$home" --argjson meta "$meta" --argjson logged "$logged" \
+      "$filter" "$file" 2>/dev/null) || out=""
+  fi
+  if [[ -n $out ]]; then
+    printf '%s\n' "$out"
     return 0
   fi
   echo '{}' | jq -c --arg name "$name" --arg home "$home" --argjson meta "$meta" \
@@ -285,7 +291,7 @@ cmd_add() {
   name=${POS[1]:-}
   need_provider "$provider"
   [[ $name == default ]] && die "'default' is the normal home; it needs no add (to label it: agent-account set $provider default --label <text>)"
-  aa_valid_name "$name" || die "'$name' is not a valid account id (a-z, 0-9, '.', '_', '-'; at most 32)"
+  aa_valid_name "$name" || die "'$name' is not a valid account id (a-z, 0-9, '.', '_', '-'; at most 32; not active or accounts.json)"
   home=$(aa_home "$provider" "$name")
   if [[ -d $home ]]; then
     echo "$provider account '$name' exists: $home (its own files are kept; links refreshed)"
@@ -293,7 +299,7 @@ cmd_add() {
     (umask 077 && mkdir -p "$home") || die "cannot create $home"
     echo "$provider account '$name' created: $home"
   fi
-  aa_refresh "$provider" "$home"
+  aa_refresh "$provider" "$home" || die "could not prepare $home (links or .claude.json)"
   apply_meta "$provider" "$name"
   login_hint "$provider" "$name" "$home"
 }
@@ -342,7 +348,7 @@ cmd_login() {
       save_cursor_key "$home"
       return
     fi
-    aa_refresh "$provider" "$home"
+    aa_refresh "$provider" "$home" || die "could not prepare $home (links or .claude.json)"
     export "$var=$home"
   fi
   case $provider in
