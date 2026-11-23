@@ -30,6 +30,7 @@ repo.
 | **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
 | **`battery`** | No TUI (macOS): the battery of every connected Bluetooth device that has the standard GATT Battery Service, read from the device itself — so it also works for BLE keyboards that macOS shows no battery for. Ships **BatteryBar**, a menu bar item with short labels stacked in two lines (`KB 100%` over `MS 85%`) and a warning mark when one runs low. |
 | **`gh-shim`** | No TUI: a wrapper installed as `gh`. With several GitHub accounts logged in to `gh`, it runs each command as the account that git uses for the current repository, instead of the one active account. |
+| **`agent-account`** | No TUI: keep several logged-in [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) accounts, and choose the one the next session uses (for example when one account runs low on its usage limit). A shim installed as `claude` and `codex` reads the choice at every start; a running session keeps its account. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -83,6 +84,7 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
   the menu bar app (macOS)
 - `battery`: macOS with `swiftc`, and the Bluetooth permission (macOS asks
   once: for your terminal app, and for BatteryBar)
+- `agent-account`: `bash` and `jq`; Claude Code and/or Codex
 - Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
   `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
   `xdg-open`, `wslview` or `explorer.exe`). Without them the action still tells
@@ -93,11 +95,12 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
 ```sh
 git clone https://github.com/athosmartinez/terminal-tools.git
 cd terminal-tools
-./install.sh            # symlinks kube, logs, ports, monitor, vox, battery into ~/.local/bin
+./install.sh            # symlinks kube, logs, ports, monitor, vox, battery, agent-account into ~/.local/bin
 ```
 
-`install.sh` symlinks the six entry points into `~/.local/bin` (make sure it's
-on your `$PATH`). Because they're symlinks, editing files in the repo updates the
+`install.sh` symlinks the seven entry points into `~/.local/bin` (make sure it's
+on your `$PATH`), and the shims (`gh`, `claude`, `codex`) into
+`~/.local/share/terminal-tools/shims`. Because they're symlinks, editing files in the repo updates the
 installed tools instantly. The shared `lib/` is resolved relative to each script,
 so it travels with the repo.
 
@@ -349,6 +352,73 @@ runs `gh` (on macOS, `brew shellenv` in `~/.zprofile` puts Homebrew first, so
 prepend the shim directory again after it). Check the choice with
 `GH_SHIM_DEBUG=1 gh api user --jq .login`. A tool that calls the real `gh` by
 its full path skips the shim.
+
+**Several Claude Code and Codex accounts (`agent-account`).** Each account
+has its own home folder, which becomes the `CLAUDE_CONFIG_DIR` (Claude Code)
+or `CODEX_HOME` (Codex) of its sessions. The home links every entry of
+`~/.claude` or `~/.codex` — settings, skills, hooks, plugins, sessions — so
+only the login differs. The account `default` is the normal `~/.claude` (with
+`~/.claude.json`) or `~/.codex`. You choose the active account by hand; the
+next session uses it, and a running session keeps its own.
+
+The registry lives in `$AGENT_ACCOUNTS_HOME` (default
+`~/.local/share/agent-accounts`), never in a repo:
+
+```text
+~/.local/share/agent-accounts/
+  claude/active        one line: the active account (missing = default)
+  claude/work/         the home of account "work" = its CLAUDE_CONFIG_DIR
+  codex/active
+  codex/work/          = its CODEX_HOME
+```
+
+- An account name: lowercase letters, digits, `.`, `_`, `-`, at most 32
+  characters. The folder name is the account name.
+- Claude: the home links every entry of `~/.claude` except `.claude.json`
+  and `.credentials.json`. Its own `.claude.json` starts as a copy of
+  `~/.claude.json` without the account identity (`oauthAccount`, `userID`).
+  At every start the shim copies the user-scope MCP servers (`mcpServers` of
+  `~/.claude.json`) into it, and links entries that appeared in `~/.claude`.
+  On macOS, Claude Code keeps the login in the Keychain, in an item named after
+  the home path: if you move a home, log in again.
+- Codex: the home links every entry of `~/.codex` except `auth.json`,
+  `auth.json.lock` and `auth.lock`. The sessions are shared, so `codex resume`
+  works in every account.
+
+```sh
+agent-account list                  # the accounts, the active one marked with *
+agent-account list --json           # the same as JSON: email, logged_in, account id, plan
+agent-account add <provider> <name> # create the home; prints the login step
+agent-account login <provider> <name>   # log in to it (interactive)
+agent-account use <provider> <name>     # new sessions use it; "default" goes back
+agent-account env <provider> [<name>]   # CLAUDE_CONFIG_DIR=... / CODEX_HOME=...
+agent-account remove <provider> <name> [--yes]
+```
+
+`<provider>` is `claude` or `codex`. To add an account:
+
+1. Create its home: `agent-account add claude work`.
+2. Log in, in your own terminal: `agent-account login claude work` (the same
+   as `CLAUDE_CONFIG_DIR=<home> claude auth login`). For Codex,
+   `agent-account login codex work` runs `CODEX_HOME=<home> codex login`; you
+   can also copy an `auth.json` you already have into the home.
+3. Use it: `agent-account use claude work`. Check with `agent-account list`.
+
+The shim (`agent-shim`, linked as `claude` and `codex` into
+`~/.local/share/terminal-tools/shims`) picks the account for each start:
+
+1. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` is already set, or `AGENT_ACCOUNT=` is
+   set and empty: it runs the real binary unchanged.
+2. `AGENT_ACCOUNT=<name>`: that account, for this run only.
+3. Otherwise the active account. `default` runs the real binary unchanged,
+   so the shim costs nothing while you use only one account.
+
+An account without a home stops with an error: the shim never falls back to
+another account. Like `gh-shim`, the shim directory must come **before** the
+real `claude` and `codex` on `PATH` in every shell and app that starts them;
+`AGENT_ACCOUNT_REAL_CLAUDE` / `AGENT_ACCOUNT_REAL_CODEX` set the real binary.
+`remove` refuses `default` and the active account, and on macOS it prints the
+Keychain item that it leaves.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

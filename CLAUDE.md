@@ -4,8 +4,10 @@ Guidance for AI-assisted work on **terminal-tools** (`kube`, `logs`, `ports` —
 three zsh + fzf terminal TUIs — plus `monitor`, a macOS Swift CLI and menu bar
 app, with a separate Linux/Hyprland version in bash, `vox`, a Voxtype
 companion: transcription history plus a menu bar app with the daemon state,
-and `battery`, a macOS Swift CLI and menu bar app with the battery of the
-connected Bluetooth devices). Conventions and gotchas live here; user-facing
+`battery`, a macOS Swift CLI and menu bar app with the battery of the
+connected Bluetooth devices, and `agent-account`, a bash CLI plus a shim
+installed as `claude` and `codex` that switches between several logged-in
+accounts). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
@@ -52,6 +54,24 @@ other people and holds nothing private:
   PATH with `GH_TOKEN`. `gh auth …` and a preset token pass through. It must
   stay bash 3.2 compatible (macOS `/bin/bash`). Test:
   `bash tests/gh-shim.test.sh` (fake `gh`, temp git repos, no network).
+- `agent-account` + `agent-shim` — bash 3.2, shared code in
+  `lib/agent-account.sh`. `agent-shim` is linked as `claude` and `codex` in
+  the shims dir and picks the provider from `basename "$0"`. Registry:
+  `${AGENT_ACCOUNTS_HOME:-$XDG_DATA_HOME/agent-accounts}/<provider>/<name>/`
+  (= `CLAUDE_CONFIG_DIR` / `CODEX_HOME`) and `<provider>/active`. Gotchas:
+  - Build a home path only as `<root>/<provider>/<name>`, never resolved:
+    Claude Code names the macOS Keychain item of a login
+    `Claude Code-credentials-<first 8 hex of sha256 of the dir string>`.
+  - Links go to `$HOME/.claude/<entry>`, not to the entry's target, so a
+    change of a linked entry reaches every account. An entry that exists in
+    the account home is never overwritten.
+  - The account's `.claude.json` is rewritten (tmp + `mv`, mode 600) only
+    when `mcpServers` differs: a running session writes the same file.
+  - The CLI ignores `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from its own env: it
+    often runs inside an agent session.
+  - The Codex `id_token` is decoded inside jq; only email, account id and
+    plan leave it. Never print `auth.json`.
+  Test: `bash tests/agent-account.test.sh` (fake homes, fake binaries).
 - `kube` — a keyboard-first Kubernetes cockpit (single persistent fzf).
 - `logs` — follow workload logs across namespaces (one color per pod).
 - `ports` — view/kill processes on TCP ports (`lsof`). Self-contained on purpose:
@@ -326,6 +346,9 @@ fzf bindings that read/write **file-based state** and update the UI in place:
 ## Testing
 
 - Syntax: `zsh -n kube logs ports vox battery lib/*.zsh` (run per file).
+- `gh-shim`, `agent-account`: `bash tests/gh-shim.test.sh`,
+  `bash tests/agent-account.test.sh` (fake homes and binaries; never the real
+  `~/.claude`, `~/.codex` or Keychain).
 - `battery`: `bash tests/battery.test.sh` compiles `lib/battery/Battery.swift`
   with `tests/battery/main.swift` (no Bluetooth, fake devices). The real check
   is `./battery` on a Mac with devices connected.
@@ -380,13 +403,18 @@ lib/battery/app/main.swift BatteryBar menu bar app (`battery app`)
 lib/battery/app/AppIcon.png  app icon, 1024 px; AppIcon.swift draws it
 tests/monitor-linux.test.sh
 tests/monitor.test.sh      + tests/monitor/main.swift (macOS rules, fake displays)
+agent-account              accounts CLI (bash) → lib/agent-account.sh
+agent-shim                 installed as claude and codex (shims dir)
+gh-shim                    installed as gh (shims dir)
+tests/agent-account.test.sh
+tests/gh-shim.test.sh
 tests/battery.test.sh      + tests/battery/main.swift
-install.sh                 symlinks the 6 entry points into ~/.local/bin (bash)
+install.sh                 symlinks the 7 entry points into ~/.local/bin, the shims into the shims dir (bash)
 ```
 
 Requires: `fzf` ≥ 0.30 (features here assume 0.74), `zsh`; `kubectl` (kube/logs),
 `lsof` (ports), `swiftc` (monitor, vox and battery, macOS), `jq` + `hyprctl` (monitor,
-Linux), Voxtype (vox).
+Linux), Voxtype (vox), `jq` (agent-account).
 
 ## Platform (macOS / Linux / WSL2)
 
