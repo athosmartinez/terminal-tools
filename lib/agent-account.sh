@@ -90,7 +90,7 @@ aa_link_entries() {
 }
 
 # Keys of ~/.claude.json that name the logged-in account.
-AA_CLAUDE_IDENTITY_KEYS='["oauthAccount","userID","primaryApiKey","customApiKeyResponses","orgModelDefaultCache"]'
+AA_CLAUDE_IDENTITY_KEYS='["oauthAccount","userID","primaryApiKey","customApiKeyResponses","orgModelDefaultCache","penguinModeOrgEnabled"]'
 
 # The account's .claude.json starts as ~/.claude.json without its identity.
 aa_claude_seed() {

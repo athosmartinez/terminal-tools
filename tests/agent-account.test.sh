@@ -42,7 +42,7 @@ echo x >"$HOME/.claude/.credentials.json"
 echo '# shared' >"$WORK/elsewhere/CLAUDE.md"
 ln -s "$WORK/elsewhere/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
 cat >"$HOME/.claude.json" <<'EOF'
-{"oauthAccount": {"emailAddress": "a@example.com"}, "userID": "u-1",
+{"oauthAccount": {"emailAddress": "a@example.com"}, "userID": "u-1", "penguinModeOrgEnabled": true,
  "theme": "light", "mcpServers": {"one": {"command": "one"}}}
 EOF
 
