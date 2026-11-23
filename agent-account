@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+#
+# agent-account — keep several logged-in Claude Code and Codex accounts and
+# choose the one the NEXT session uses. A running session keeps its account.
+#
+# Each account other than "default" has its own home folder, which is the
+# CLAUDE_CONFIG_DIR / CODEX_HOME of its sessions. The home links every entry
+# of ~/.claude or ~/.codex (settings, skills, hooks, sessions...) except the
+# login, so only the login differs. The shim installed as "claude" and
+# "codex" (agent-shim) reads the active account at every start.
+
+set -uo pipefail
+
+self=$0
+while [[ -L $self ]]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+# shellcheck source=lib/agent-account.sh
+. "$(cd "$(dirname "$self")" && pwd -P)/lib/agent-account.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: agent-account <command>
+
+  list [--json]                     the accounts of each provider; * = active
+  use <provider> <name>             new sessions use <name>
+  add <provider> <name>             create the home of <name>; prints the login step
+  login <provider> <name>           log in to <name> (interactive)
+  remove <provider> <name> [--yes]  delete the home of <name>
+  env <provider> [<name>]           CLAUDE_CONFIG_DIR=... / CODEX_HOME=... for scripts
+
+Providers: claude, codex. Account "default" is ~/.claude or ~/.codex.
+Names: lowercase letters, digits, ".", "_" and "-", at most 32 characters.
+Registry: $AGENT_ACCOUNTS_HOME (default ~/.local/share/agent-accounts).
+EOF
+}
+
+die() {
+  echo "agent-account: $*" >&2
+  exit 1
+}
+
+need_provider() {
+  aa_valid_provider "${1:-}" || die "unknown provider '${1:-}' (use claude or codex)"
+}
+
+# An account that exists: "default", or a valid name with a home folder.
+need_account() {
+  local provider=$1 name=${2:-}
+  [[ -n $name ]] || die "missing account name"
+  [[ $name == default ]] && return 0
+  aa_valid_name "$name" || die "'$name' is not a valid account name"
+  [[ -d $(aa_home "$provider" "$name") ]] ||
+    die "no $provider account '$name' (create it with: agent-account add $provider $name)"
+}
+
+# default first, then the account folders by name.
+account_names() {
+  local dir entry name
+  echo default
+  dir="$(aa_root)/$1"
+  [[ -d $dir ]] || return 0
+  for entry in "$dir"/*; do
+    [[ -d $entry ]] || continue
+    name=${entry##*/}
+    aa_valid_name "$name" && echo "$name"
+  done
+}
+
+# One account as a JSON object. Never prints a token: only the email, the
+# account id and the plan leave jq.
+account_json() {
+  local provider=$1 name=$2 home file filter
+  home=$(aa_home "$provider" "$name")
+  case $provider in
+    claude)
+      file="$home/.claude.json"
+      [[ $name == default ]] && file="$HOME/.claude.json"
+      filter='{name: $name, home: $home,
+        email: (.oauthAccount.emailAddress // null),
+        logged_in: (.oauthAccount != null),
+        account_id: null}'
+      ;;
+    codex)
+      file="$home/auth.json"
+      filter='
+        ((.tokens.id_token // "") | split(".")) as $parts
+        | (if ($parts | length) >= 2 then
+             ($parts[1] | gsub("-"; "+") | gsub("_"; "/")
+              | . + ("=" * ((4 - length % 4) % 4))
+              | try (@base64d | fromjson) catch null)
+           else null end) as $p
+        | {name: $name, home: $home,
+           email: ($p.email // $p["https://api.openai.com/profile"].email // null),
+           logged_in: (.tokens != null or .OPENAI_API_KEY != null),
+           account_id: ($p["https://api.openai.com/auth"].chatgpt_account_id // null),
+           plan: ($p["https://api.openai.com/auth"].chatgpt_plan_type // null)}'
+      ;;
+  esac
+  if [[ -r $file ]] && jq -c --arg name "$name" --arg home "$home" "$filter" "$file" 2>/dev/null; then
+    return 0
+  fi
+  echo '{}' | jq -c --arg name "$name" --arg home "$home" "$filter"
+}
+
+provider_json() {
+  local provider=$1 name
+  for name in $(account_names "$provider"); do
+    account_json "$provider" "$name"
+  done | jq -sc --arg active "$(aa_active "$provider")" '{active: $active, accounts: .}'
+}
+
+cmd_list() {
+  local json
+  json=$(jq -n --argjson claude "$(provider_json claude)" --argjson codex "$(provider_json codex)" \
+    '{claude: $claude, codex: $codex}') || die "could not read the accounts"
+  if [[ ${1:-} == --json ]]; then
+    echo "$json"
+    return
+  fi
+  local provider mark name email state home
+  for provider in $AA_PROVIDERS; do
+    echo "$provider"
+    while IFS=$'\t' read -r mark name email state home; do
+      printf '  %s %-14s %-32s %-16s %s\n' "$mark" "$name" "$email" "$state" "$home"
+    done < <(jq -r --arg p "$provider" '.[$p] as $x | $x.accounts[]
+      | [(if .name == $x.active then "*" else " " end), .name, (.email // "-"),
+         (if .logged_in then "logged in" else "not logged in" end)
+         + (if .plan then " " + .plan else "" end), .home] | @tsv' <<<"$json")
+    if ! jq -e --arg p "$provider" '.[$p] as $x | any($x.accounts[]; .name == $x.active)' \
+      <<<"$json" >/dev/null; then
+      echo "  ! the active account '$(aa_active "$provider")' has no home: new sessions fail"
+    fi
+  done
+}
+
+cmd_use() {
+  local provider=${1:-} name=${2:-} dir tmp email
+  need_provider "$provider"
+  need_account "$provider" "$name"
+  dir="$(aa_root)/$provider"
+  mkdir -p "$dir" || die "cannot create $dir"
+  tmp=$(mktemp "$dir/.active.XXXXXX") || die "cannot write in $dir"
+  if ! { printf '%s\n' "$name" >"$tmp" && mv -f "$tmp" "$dir/active"; }; then
+    rm -f "$tmp"
+    die "cannot write $dir/active"
+  fi
+  email=$(account_json "$provider" "$name" | jq -r '.email // "not logged in"')
+  echo "$provider: new sessions use $name ($email); running sessions keep their account"
+}
+
+login_hint() {
+  local provider=$1 name=$2 home=$3
+  echo "Log in, in your own terminal:"
+  case $provider in
+    claude)
+      echo "  agent-account login claude $name"
+      echo "  (the same as: CLAUDE_CONFIG_DIR='$home' claude auth login)"
+      ;;
+    codex)
+      echo "  agent-account login codex $name"
+      echo "  (the same as: CODEX_HOME='$home' codex login)"
+      echo "  or copy an auth.json you already have: cp <auth.json> '$home/auth.json'"
+      ;;
+  esac
+  echo "Then: agent-account use $provider $name"
+}
+
+cmd_add() {
+  local provider=${1:-} name=${2:-} home
+  need_provider "$provider"
+  [[ $name == default ]] && die "'default' is the normal home ($(aa_default_home "$provider")); it needs no add"
+  aa_valid_name "$name" || die "'$name' is not a valid account name (a-z, 0-9, '.', '_', '-'; at most 32)"
+  home=$(aa_home "$provider" "$name")
+  if [[ -d $home ]]; then
+    echo "$provider account '$name' exists: $home (links refreshed)"
+  else
+    (umask 077 && mkdir -p "$home") || die "cannot create $home"
+    echo "$provider account '$name' created: $home"
+  fi
+  aa_refresh "$provider" "$home"
+  login_hint "$provider" "$name" "$home"
+}
+
+cmd_login() {
+  local provider=${1:-} name=${2:-} var home
+  need_provider "$provider"
+  need_account "$provider" "$name"
+  shift 2
+  var=$(aa_env_var "$provider")
+  if [[ $name == default ]]; then
+    unset "$var"
+    export AGENT_ACCOUNT=""
+  else
+    home=$(aa_home "$provider" "$name")
+    aa_refresh "$provider" "$home"
+    export "$var=$home"
+  fi
+  case $provider in
+    claude) exec claude auth login "$@" ;;
+    codex) exec codex login "$@" ;;
+  esac
+}
+
+# Claude Code on macOS keeps the login of a config dir in the Keychain item
+# "Claude Code-credentials-<first 8 hex of sha256 of the dir path>".
+keychain_item() {
+  local hash
+  if command -v shasum >/dev/null 2>&1; then
+    hash=$(printf '%s' "$1" | shasum -a 256)
+  else
+    hash=$(printf '%s' "$1" | sha256sum)
+  fi
+  echo "Claude Code-credentials-${hash:0:8}"
+}
+
+cmd_remove() {
+  local yes=0 args=() arg provider name home answer="" item
+  for arg in "$@"; do
+    case $arg in
+      --yes | -y) yes=1 ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  provider=${args[0]:-}
+  name=${args[1]:-}
+  need_provider "$provider"
+  [[ $name == default ]] && die "'default' is the normal home; it cannot be removed"
+  need_account "$provider" "$name"
+  [[ $(aa_active "$provider") == "$name" ]] &&
+    die "'$name' is the active $provider account; first run: agent-account use $provider <other>"
+  home=$(aa_home "$provider" "$name")
+  if ((yes == 0)); then
+    { printf 'Remove %s? Its login is lost. [y/N] ' "$home" >/dev/tty && read -r answer </dev/tty; } 2>/dev/null ||
+      die "no terminal to confirm; add --yes"
+    [[ $answer == [yY]* ]] || die "nothing removed"
+  fi
+  rm -rf -- "$home" || die "cannot remove $home"
+  echo "Removed $home."
+  if [[ $provider == claude && $(uname -s) == Darwin ]]; then
+    item=$(keychain_item "$home")
+    echo "Its login stays in the macOS Keychain as \"$item\". To delete it:"
+    echo "  security delete-generic-password -s '$item'"
+  fi
+}
+
+cmd_env() {
+  local provider=${1:-} name=${2:-} var
+  need_provider "$provider"
+  [[ -n $name ]] || name=$(aa_active "$provider")
+  need_account "$provider" "$name"
+  var=$(aa_env_var "$provider")
+  if [[ $name == default ]]; then
+    echo "$var="
+  else
+    echo "$var=$(aa_home "$provider" "$name")"
+  fi
+}
+
+cmd=${1:-}
+[[ $# -gt 0 ]] && shift
+case $cmd in
+  -h | --help | help) usage; exit 0 ;;
+  "") usage; exit 1 ;;
+esac
+
+command -v jq >/dev/null 2>&1 || die "jq is required (brew install jq / apt install jq)"
+
+case $cmd in
+  list | ls) cmd_list "$@" ;;
+  use) cmd_use "$@" ;;
+  add) cmd_add "$@" ;;
+  login) cmd_login "$@" ;;
+  remove | rm) cmd_remove "$@" ;;
+  env) cmd_env "$@" ;;
+  *) usage >&2; die "unknown command '$cmd'" ;;
+esac

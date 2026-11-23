@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+#
+# agent-shim — run Claude Code or Codex with the account chosen by
+# agent-account. Installed twice, as "claude" and as "codex", in a directory
+# that comes before the real binaries on PATH (install.sh links it into
+# ~/.local/share/terminal-tools/shims); the name it runs as picks the provider.
+#
+# The account comes from the first rule that matches:
+#   1. CLAUDE_CONFIG_DIR (claude) or CODEX_HOME (codex) is already set, or
+#      AGENT_ACCOUNT is set to an empty value: the real binary runs unchanged.
+#   2. AGENT_ACCOUNT=<name>: that account, for this run only.
+#   3. Otherwise the active account of agent-account.
+# Account "default" runs the real binary unchanged. Any other account runs it
+# with CLAUDE_CONFIG_DIR / CODEX_HOME set to the account's home, after the
+# home gets links to new entries of ~/.claude or ~/.codex (and, for Claude,
+# the user-scope MCP servers of ~/.claude.json). An account without a home
+# is an error: the shim never falls back to another account.
+#
+# AGENT_ACCOUNT_REAL_CLAUDE / AGENT_ACCOUNT_REAL_CODEX=<path> sets the real
+# binary; by default it is the next one on PATH that is not this shim.
+
+set -uo pipefail
+
+provider=${0##*/}
+case $provider in
+  claude) var=CLAUDE_CONFIG_DIR override=${AGENT_ACCOUNT_REAL_CLAUDE:-} ;;
+  codex) var=CODEX_HOME override=${AGENT_ACCOUNT_REAL_CODEX:-} ;;
+  *)
+    echo "agent-shim: install me as \"claude\" or \"codex\", not \"$provider\"" >&2
+    exit 2
+    ;;
+esac
+
+find_real() {
+  if [[ -n $override ]]; then
+    echo "$override"
+    return
+  fi
+  local dir candidate
+  local IFS=:
+  for dir in $PATH; do
+    [[ -n $dir ]] || continue
+    candidate="$dir/$provider"
+    [[ -x $candidate && ! -d $candidate ]] || continue
+    # The shim itself, in its own directory or linked from another one.
+    [[ $candidate -ef $0 ]] && continue
+    echo "$candidate"
+    return
+  done
+}
+
+real=$(find_real)
+if [[ -z $real ]]; then
+  echo "agent-shim: no real $provider found on PATH" >&2
+  exit 127
+fi
+
+ARGS=("$@")
+run_real() { exec "$real" ${ARGS[@]+"${ARGS[@]}"}; }
+
+[[ -n ${!var:-} ]] && run_real
+[[ -n ${AGENT_ACCOUNT+x} && -z $AGENT_ACCOUNT ]] && run_real
+
+self=$0
+while [[ -L $self ]]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+# shellcheck source=lib/agent-account.sh
+. "$(cd "$(dirname "$self")" && pwd -P)/lib/agent-account.sh"
+
+if [[ -n ${AGENT_ACCOUNT:-} ]]; then
+  name=$AGENT_ACCOUNT
+  if [[ $name != default ]] && ! aa_valid_name "$name"; then
+    echo "agent-shim: AGENT_ACCOUNT=$name is not a valid account name" >&2
+    exit 1
+  fi
+else
+  name=$(aa_active "$provider")
+fi
+
+[[ $name == default ]] && run_real
+
+home=$(aa_home "$provider" "$name")
+if [[ ! -d $home ]]; then
+  echo "agent-shim: $provider account '$name' has no home at $home." >&2
+  echo "agent-shim: create it with: agent-account add $provider $name" >&2
+  echo "agent-shim: or go back to the default one: agent-account use $provider default" >&2
+  exit 1
+fi
+
+aa_refresh "$provider" "$home"
+export "$var=$home"
+run_real
