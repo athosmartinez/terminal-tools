@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# agent-shim — run Claude Code, Codex or Cursor's agent CLI with the account
+# chosen by agent-account. Installed as "claude", "codex", "cursor-agent" and
+# "agent" in a directory that comes before the real binaries on PATH
+# (install.sh links it into ~/.local/share/terminal-tools/shims); the name it
+# runs as picks the provider and the real binary.
+#
+# The account comes from the first rule that matches:
+#   1. CLAUDE_CONFIG_DIR (claude), CODEX_HOME (codex) or CURSOR_API_KEY
+#      (cursor) is already set, or AGENT_ACCOUNT is set to an empty value:
+#      the real binary runs unchanged.
+#   2. AGENT_ACCOUNT=<id>: that account, for this run only.
+#   3. Otherwise the active account of agent-account.
+# Account "default" runs the real binary unchanged. Any other account runs it
+# with CLAUDE_CONFIG_DIR / CODEX_HOME set to the account's home, after the
+# home gets links to new entries of ~/.claude or ~/.codex (and, for Claude,
+# the user-scope MCP servers of ~/.claude.json); for Cursor, with
+# CURSOR_API_KEY read from the account's api-key file. An account without a
+# home (or a Cursor account without a key) is an error: the shim never falls
+# back to another account.
+#
+# AGENT_ACCOUNT_REAL_CLAUDE / _CODEX / _CURSOR=<path> sets the real binary;
+# by default it is the next one on PATH with the same name that is not this
+# shim.
+
+set -uo pipefail
+
+prog=${0##*/}
+case $prog in
+  claude) provider=claude override=${AGENT_ACCOUNT_REAL_CLAUDE:-} ;;
+  codex) provider=codex override=${AGENT_ACCOUNT_REAL_CODEX:-} ;;
+  cursor-agent | agent) provider=cursor override=${AGENT_ACCOUNT_REAL_CURSOR:-} ;;
+  *)
+    echo "agent-shim: install me as \"claude\", \"codex\", \"cursor-agent\" or \"agent\", not \"$prog\"" >&2
+    exit 2
+    ;;
+esac
+
+find_real() {
+  if [[ -n $override ]]; then
+    # An override that names the shim itself would exec it again and again.
+    if [[ $override -ef $0 ]]; then
+      echo "agent-shim: the override for $prog points to this shim, not to the real $prog" >&2
+      return
+    fi
+    echo "$override"
+    return
+  fi
+  local dir candidate
+  local IFS=:
+  for dir in $PATH; do
+    [[ -n $dir ]] || continue
+    candidate="$dir/$prog"
+    [[ -x $candidate && ! -d $candidate ]] || continue
+    # The shim itself, in its own directory or linked from another one.
+    [[ $candidate -ef $0 ]] && continue
+    echo "$candidate"
+    return
+  done
+}
+
+real=$(find_real)
+if [[ -z $real ]]; then
+  echo "agent-shim: no real $prog found on PATH" >&2
+  exit 127
+fi
+
+ARGS=("$@")
+run_real() { exec "$real" ${ARGS[@]+"${ARGS[@]}"}; }
+
+case $provider in
+  claude) var=CLAUDE_CONFIG_DIR ;;
+  codex) var=CODEX_HOME ;;
+  cursor) var=CURSOR_API_KEY ;;
+esac
+# Set at all, even empty, means the caller chose: CLAUDE_CONFIG_DIR= is ~/.claude.
+[[ -n ${!var+x} ]] && run_real
+[[ -n ${AGENT_ACCOUNT+x} && -z $AGENT_ACCOUNT ]] && run_real
+
+self=$0
+while [[ -L $self ]]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+# shellcheck source=lib/agent-account.sh
+. "$(cd "$(dirname "$self")" && pwd -P)/lib/agent-account.sh"
+
+if [[ -n ${AGENT_ACCOUNT:-} ]]; then
+  name=$AGENT_ACCOUNT
+  if [[ $name != default ]] && ! aa_valid_name "$name"; then
+    echo "agent-shim: AGENT_ACCOUNT=$name is not a valid account id" >&2
+    exit 1
+  fi
+else
+  name=$(aa_active "$provider")
+fi
+
+[[ $name == default ]] && run_real
+
+home=$(aa_home "$provider" "$name")
+if [[ ! -d $home ]]; then
+  echo "agent-shim: $provider account '$name' has no home at $home." >&2
+  echo "agent-shim: create it with: agent-account add $provider $name" >&2
+  echo "agent-shim: or go back to the default one: agent-account use $provider default" >&2
+  exit 1
+fi
+
+if [[ $provider == cursor ]]; then
+  key=""
+  [[ -r $home/api-key ]] && IFS= read -r key <"$home/api-key"
+  if [[ -z $key ]]; then
+    echo "agent-shim: cursor account '$name' has no API key in $home/api-key." >&2
+    echo "agent-shim: write it with: agent-account login cursor $name" >&2
+    exit 1
+  fi
+  export CURSOR_API_KEY=$key
+  run_real
+fi
+
+if ! aa_refresh "$provider" "$home"; then
+  echo "agent-shim: could not prepare the $provider account home $home" >&2
+  exit 1
+fi
+export "$var=$home"
+run_real
