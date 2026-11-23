@@ -482,6 +482,156 @@ usage cursor --max-age x >/dev/null 2>&1
 check_eq "usage: --max-age takes seconds" 1 $?
 for id in team nokey bad; do "$AA" remove cursor "$id" --yes >/dev/null; done
 
+# --- use --restart -------------------------------------------------------------------
+# A fake hc serves terminals from JSON files and logs every call; a send of
+# /exit or a wait swaps in the next state of that terminal. A fake lsof serves
+# the files a codex pid holds. The real hc is never on PATH here.
+
+HS=$WORK/hc
+mkdir -p "$HS"
+cat >"$HS/hc" <<'EOF'
+#!/usr/bin/env bash
+S=$(dirname "$0")
+cmd=$1
+shift
+case $cmd in
+  ls) cat "$S/ls.json" ;;
+  get) [[ -f $S/$1.json ]] || exit 1; cat "$S/$1.json" ;;
+  wait)
+    t=${*: -1}
+    printf 'wait %s\n' "$t" >>"$S/calls"
+    [[ -f $S/$t.after-wait ]] && mv "$S/$t.after-wait" "$S/$t.json"
+    echo '{"reason":"done"}' ;;
+  send)
+    printf 'send %s %s\n' "$1" "$2" >>"$S/calls"
+    [[ $2 == /exit && -f $S/$1.after-exit ]] && mv "$S/$1.after-exit" "$S/$1.json"
+    exit 0 ;;
+  *) printf 'unexpected %s %s\n' "$cmd" "$*" >>"$S/calls"; exit 2 ;;
+esac
+EOF
+cat >"$HS/lsof" <<'EOF'
+#!/usr/bin/env bash
+S=$(dirname "$0")
+[[ $1 == -p ]] && cat "$S/lsof.$2" 2>/dev/null
+exit 0
+EOF
+chmod +x "$HS/hc" "$HS/lsof"
+
+term() { # address parent labels-json foreground-json status
+  printf '{"address":"%s","parent":%s,"state":"live","labels":%s,"foreground":%s,"status":%s}\n' "$@"
+}
+fg() { # pid cwd argv-json
+  printf '{"pid":%s,"cwd":"%s","name":"%s","argv":%s}' "$1" "$2" "$(jq -r '.[0] | split("/") | last' <<<"$3")" "$3"
+}
+shell_fg() { fg "$1" "$2" '["/bin/zsh","-l"]'; }
+st() { printf '{"app":"x","state":"%s"}' "$1"; }
+
+CLA_ARGV='["/opt/homebrew/bin/claude","--model","opus","--effort","high","--agent","impl","--permission-mode","acceptEdits","--add-dir","/a","/b c","--resume","old-id","do the thing\nnow"]'
+# t1: an idle tab. t2: a working tab whose shell is elsewhere. t3: a worker
+# (parent). t4: a tab with a papel label. t5: a tab with no session file.
+# t6: another machine. t8: a tab with codex.
+term t1 null '{}' "$(fg 101 /proj1 "$CLA_ARGV")" "$(st done)" >"$HS/t1.json"
+term t1 null '{}' "$(shell_fg 100 /proj1)" null >"$HS/t1.after-exit"
+term t2 null '{}' "$(fg 201 /proj2 '["claude"]')" "$(st working)" >"$HS/t2.json"
+term t2 null '{}' "$(fg 201 /proj2 '["claude"]')" "$(st idle)" >"$HS/t2.after-wait"
+term t2 null '{}' "$(shell_fg 200 /home)" null >"$HS/t2.after-exit"
+term t3 '"t1"' '{}' "$(fg 301 /proj3 '["claude"]')" "$(st idle)" >"$HS/t3.json"
+term t4 null '{"papel":"revisor"}' "$(fg 401 /proj4 '["claude"]')" "$(st idle)" >"$HS/t4.json"
+term t5 null '{}' "$(fg 501 /proj5 '["claude"]')" "$(st idle)" >"$HS/t5.json"
+term t7 null '{}' "$(shell_fg 700 /proj7)" null >"$HS/t7.json"
+CDX_ARGV='["/opt/homebrew/bin/codex","--no-daemon","-m","gpt-x","-c","model_reasoning_effort=high","-s","read-only","the prompt"]'
+term t8 null '{}' "$(fg 801 /proj8 "$CDX_ARGV")" "$(st idle)" >"$HS/t8.json"
+term t8 null '{}' "$(shell_fg 800 /proj8)" null >"$HS/t8.after-exit"
+jq -n '{terminals: [
+  {address: "t1", state: "live"}, {address: "t2", state: "live"},
+  {address: "t3", parent: "t1", state: "live"}, {address: "t4", state: "live"},
+  {address: "t5", state: "live"}, {address: "box/t6", state: "live"},
+  {address: "t7", state: "live"}, {address: "t8", state: "live"}]}' >"$HS/ls.json"
+mkdir -p "$HOME/.claude/sessions"
+for p in 101 201 301 401; do
+  printf '{"pid":%s,"sessionId":"%s-0000-4000-8000-000000000000"}\n' "$p" "$p$p$p$p$p" >"$HOME/.claude/sessions/$p.json"
+done
+R=$HOME/.codex/sessions/2026/11/23
+mkdir -p "$R"
+printf '{"type":"session_meta","payload":{"id":"aaaa0000-0000-7000-8000-000000000001","source":"cli"}}\n' \
+  >"$R/rollout-2026-11-23T10-00-00-aaaa0000-0000-7000-8000-000000000001.jsonl"
+printf '{"type":"session_meta","payload":{"id":"bbbb0000-0000-7000-8000-000000000002","source":{"subagent":{}}}}\n' \
+  >"$R/rollout-2026-11-23T10-05-00-bbbb0000-0000-7000-8000-000000000002.jsonl"
+printf 'p801\nn/dev/null\nn%s\nn%s\n' "$R/rollout-2026-11-23T10-00-00-aaaa0000-0000-7000-8000-000000000001.jsonl" \
+  "$R/rollout-2026-11-23T10-05-00-bbbb0000-0000-7000-8000-000000000002.jsonl" >"$HS/lsof.801"
+
+"$AA" add claude next >/dev/null
+"$AA" add codex next >/dev/null
+LOG=$XDG_STATE_HOME/agent-account/restart.log
+restart_env() {
+  PATH=$HS:$PATH AGENT_ACCOUNT_HC=$HS/hc AGENT_ACCOUNT_RESTART_POLL=0.05 AGENT_ACCOUNT_RESTART_EXIT_TRIES=40 "$@"
+}
+# The detached worker writes "finished" last; wait for it (at most ~20 s).
+wait_restart() { # provider
+  local i
+  for ((i = 0; i < 200; i++)); do
+    grep -q "$1: restart on next finished" "$LOG" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  return 1
+}
+check_true "restart: the fake hc is the one on PATH" test "$(PATH=$HS:$PATH command -v hc)" == "$HS/hc"
+
+out=$(restart_env "$AA" use claude next --restart)
+check_eq "restart: use switches the account" next "$(cat "$A/claude/active")"
+check_eq "restart: one line with the count of tab sessions" \
+  "2 claude sessions will restart on next when idle" "$out"
+check_true "restart: the detached worker finishes" wait_restart claude
+calls=$(cat "$HS/calls")
+check_eq "restart: only the tab sessions get input" "t1 t2" \
+  "$(awk '$1 == "send" {print $2}' <<<"$calls" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+check_true "restart: workers, papel tabs and other machines are never touched" \
+  test -z "$(grep -E ' (t3|t4|t5|t6|box/t6|t7|t8)( |$)' <<<"$calls")"
+check_true "restart: an idle session is not waited for" test -z "$(grep '^wait t1' <<<"$calls")"
+check_eq "restart: a working session is waited for before /exit" "wait t2|send t2 /exit" \
+  "$(grep ' t2' <<<"$calls" | head -2 | tr '\n' '|' | sed 's/|$//')"
+check_eq "restart: the command keeps the options, drops the prompt and the old resume" \
+  "send t1 claude --model opus --effort high --agent impl --permission-mode acceptEdits --add-dir /a '/b c' --resume 101101101101101-0000-4000-8000-000000000000" \
+  "$(grep '^send t1 claude' <<<"$calls")"
+check_eq "restart: a shell in another folder gets a cd first" \
+  "send t2 cd /proj2 && claude --resume 201201201201201-0000-4000-8000-000000000000" \
+  "$(grep '^send t2 cd' <<<"$calls")"
+check "restart: a session with no id is logged, not restarted" "t5: claude pid 501 has no session id" "$(cat "$LOG")"
+check "restart: the log names each restart" "t1: restarted on next: claude --model opus" "$(cat "$LOG")"
+
+: >"$HS/calls"
+out=$(restart_env "$AA" use codex next --restart)
+check_eq "restart: codex tab sessions are counted" "1 codex sessions will restart on next when idle" "$out"
+check_true "restart: the codex worker finishes" wait_restart codex
+check_eq "restart: codex resumes the main rollout, not a subagent's" \
+  "send t8 /exit|send t8 codex resume --no-daemon -m gpt-x -c model_reasoning_effort=high -s read-only aaaa0000-0000-7000-8000-000000000001" \
+  "$(tr '\n' '|' <"$HS/calls" | sed 's/|$//')"
+
+: >"$HS/calls"
+check "restart: use without --restart prints the old line and starts nothing" \
+  "claude: new sessions use default (" \
+  "$(restart_env "$AA" use claude default)"
+check_eq "restart: use without --restart calls no hc" "" "$(cat "$HS/calls")"
+check_eq "restart: no hc means 0 sessions, exit 0" "0 claude sessions will restart on next when idle" \
+  "$(AGENT_ACCOUNT_HC=$WORK/no-hc "$AA" use claude next --restart)"
+check_eq "restart: cursor has nothing to restart" "0 cursor sessions will restart on default when idle" \
+  "$(restart_env "$AA" use cursor default --restart 2>/dev/null)"
+
+# A session that ends before its turn does is left alone.
+term t2 null '{}' "$(fg 201 /proj2 '["claude"]')" "$(st working)" >"$HS/t2.json"
+term t2 null '{}' "$(shell_fg 200 /home)" null >"$HS/t2.after-wait"
+jq '.terminals |= map(select(.address == "t2"))' "$HS/ls.json" >"$HS/ls.tmp" && mv "$HS/ls.tmp" "$HS/ls.json"
+: >"$HS/calls"
+: >"$LOG"
+restart_env "$AA" use claude default --restart >/dev/null
+check_eq "restart: the worker runs for a session that is still working" 0 $?
+for ((i = 0; i < 200; i++)); do grep -q 'restart on default finished' "$LOG" && break; sleep 0.1; done
+check "restart: a session that ended while waited for is not restarted" "t2: claude pid 201 ended" "$(cat "$LOG")"
+check_eq "restart: and gets no input" "wait t2" "$(cat "$HS/calls")"
+"$AA" use codex default >/dev/null
+"$AA" remove claude next --yes >/dev/null
+"$AA" remove codex next --yes >/dev/null
+
 # --- install.sh ------------------------------------------------------------------
 
 BIN=$WORK/bin SHIMS=$WORK/inst-shims "$REPO/install.sh" >/dev/null 2>&1

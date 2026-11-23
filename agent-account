@@ -30,7 +30,11 @@ usage() {
 Usage: agent-account <command>
 
   list [--json]                       the accounts of each provider; * = active
-  use <provider> <id|label>           new sessions use that account
+  use <provider> <id|label> [--restart]
+                                      new sessions use that account; --restart
+                                      also restarts the open tab sessions of
+                                      claude or codex in hc terminals, each one
+                                      when its turn ends, on that account
   add <provider> <id> [--label <text>] [--tag <text>]
                                       create the home of <id>; prints the login step
   set <provider> <id> [--label <text>] [--tag <text>]
@@ -210,15 +214,26 @@ cmd_list() {
 }
 
 cmd_use() {
-  local provider=${1:-} name dir tmp who
+  local restart=0 args=() arg provider name dir tmp who
+  for arg in "$@"; do
+    case $arg in
+      --restart) restart=1 ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  provider=${args[0]:-}
   need_provider "$provider"
-  name=$(resolve_account "$provider" "${2:-}") || exit 1
+  name=$(resolve_account "$provider" "${args[1]:-}") || exit 1
   dir="$(aa_root)/$provider"
   mkdir -p "$dir" || die "cannot create $dir"
   tmp=$(mktemp "$dir/.active.XXXXXX") || die "cannot write in $dir"
   if ! { printf '%s\n' "$name" >"$tmp" && mv -f "$tmp" "$dir/active"; }; then
     rm -f "$tmp"
     die "cannot write $dir/active"
+  fi
+  if ((restart)); then
+    start_restart "$provider" "$name"
+    return
   fi
   who=$(account_json "$provider" "$name" |
     jq -r '.email // (if .logged_in == false then "not logged in" else .label end)')
@@ -605,6 +620,272 @@ cmd_usage() {
       + (if .resets_at then "  resets \(.resets_at)" else "" end) end)' <<<"$all"
 }
 
+# --- use --restart ----------------------------------------------------------------
+#
+# Restart the open tab sessions of a provider in Herdr (hc) terminals, so they
+# continue the same conversation on the account that is now active. A tab is
+# a live local terminal with no parent and no "papel" label; a worker started
+# with hc run has a parent and is never touched. Each session restarts only
+# when its turn has ended: idle now, or after hc wait. The agent ends with
+# /exit, and the shell of the tab gets the same command line (options kept,
+# initial prompt and old resume dropped) plus the resume of the session. The
+# shim then starts it on the new account.
+
+hc_bin() { echo "${AGENT_ACCOUNT_HC:-hc}"; }
+
+restart_log_file() {
+  echo "${XDG_STATE_HOME:-$HOME/.local/state}/agent-account/restart.log"
+}
+
+rlog() { printf '%s %s\n' "$(now_iso)" "$*" >>"$(restart_log_file)"; }
+
+# The session id of a running Claude Code process: sessions/<pid>.json in
+# one of the account homes (they all link ~/.claude/sessions).
+claude_session_id() { # pid
+  local pid=$1 name file id
+  for name in $(account_names claude); do
+    file="$(aa_home claude "$name")/sessions/$pid.json"
+    [[ -r $file ]] || continue
+    id=$(jq -r --argjson pid "$pid" 'select(.pid == $pid) | .sessionId // empty | strings' "$file" 2>/dev/null)
+    if [[ $id =~ ^[A-Za-z0-9-]{8,64}$ ]]; then
+      echo "$id"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# The session id of a running Codex process: the rollout file it holds open
+# (sessions/.../rollout-*.jsonl), whose first line is the session_meta. A
+# subagent thread has its own rollout with an object as source; the newest
+# main one wins. With the background server (no --no-daemon), the server
+# holds the rollout, not the TUI process: then there is no id.
+codex_session_id() { # pid
+  local pid=$1 file id best="" best_m=0 m
+  command -v lsof >/dev/null 2>&1 || return 1
+  while IFS= read -r file; do
+    [[ -r $file ]] || continue
+    id=$(head -n 1 "$file" | jq -r 'select(.type == "session_meta")
+      | .payload | select((.source | type) != "object") | .id // empty | strings' 2>/dev/null)
+    [[ $id =~ ^[A-Za-z0-9-]{8,64}$ ]] || continue
+    m=$(file_mtime "$file")
+    if [[ -z $best ]] || ((${m:-0} > best_m)); then
+      best=$id best_m=${m:-0}
+    fi
+  done < <(lsof -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | grep -E '/sessions/.*/rollout-[^/]*\.jsonl$')
+  [[ -n $best ]] && echo "$best"
+}
+
+session_id() { # provider pid
+  case $1 in
+    claude) claude_session_id "$2" ;;
+    codex) codex_session_id "$2" ;;
+    *) return 1 ;;
+  esac
+}
+
+# The new command line, from the terminal's JSON (hc get) on stdin. Options
+# are kept with their values; the initial prompt (a positional), images and
+# the old resume / continue / session id are dropped. Nothing (empty) when
+# the program runs a subcommand that is not an interactive session.
+restart_command() { # provider session-id
+  jq -r --arg p "$1" --arg sid "$2" '
+    def lists:
+      if $p == "claude" then {
+        one: ["--agent","--agents","--append-system-prompt","--append-system-prompt-file",
+          "--autocompact","--debug-file","--effort","--environment","--fallback-model",
+          "--input-format","--json-schema","--max-budget-usd","--max-turns","--model",
+          "--name","-n","--output-format","--permission-mode","--permission-prompt-tool",
+          "--permission-prompts","--plugin-dir","--plugin-url",
+          "--remote-control-session-name-prefix","--setting-sources","--settings",
+          "--system-prompt","--system-prompt-file","--system-prompt-snapshot"],
+        many: ["--add-dir","--allowedTools","--allowed-tools","--disallowedTools",
+          "--disallowed-tools","--betas","--mcp-config","--tools"],
+        opt: ["--debug","-d","--prompt-suggestions","--remote-control"],
+        drop0: ["--continue","-c","--fork-session","--print","-p","--bg","--background",
+          "--desktop","--tmux"],
+        drop1: ["--session-id"],
+        dropmany: ["--file"],
+        dropopt: ["--resume","-r","--from-pr","--teleport","--cloud","--worktree","-w"],
+        subs: ["mcp","config","doctor","update","upgrade","install","plugin","plugins",
+          "setup-token","auth","agents","migrate-installer","remote-control"]}
+      else {
+        one: ["-c","--config","--enable","--disable","--remote","--remote-auth-token-env",
+          "-m","--model","--local-provider","-p","--profile","-s","--sandbox","-C","--cd",
+          "--add-dir","-a","--ask-for-approval"],
+        many: [],
+        opt: [],
+        drop0: ["--last","--all","--include-non-interactive","--worktree"],
+        drop1: [],
+        dropmany: ["-i","--image"],
+        dropopt: [],
+        subs: ["exec","e","review","login","logout","mcp","mcp-server","app-server",
+          "completion","sandbox","debug","apply","a","cloud","features","help","generate-ts",
+          "update","doctor","plugin","app"]}
+      end;
+    def isopt: startswith("-") and . != "-";
+    def inl($l): . as $a | $l | index([$a]) != null;
+    lists as $L
+    | (.foreground.argv // []) as $argv
+    | def go($i; $out; $lead):
+        if $i >= ($argv | length) then $out
+        else $argv[$i] as $a
+        | if $a == "--" then $out
+          elif ($a | startswith("--")) and ($a | contains("=")) then
+            ($a | split("=")[0]) as $n
+            | go($i + 1; (if ($n | inl($L.drop0 + $L.drop1 + $L.dropmany + $L.dropopt))
+                then $out else $out + [$a] end); $lead)
+          elif $a | inl($L.drop0) then go($i + 1; $out; $lead)
+          elif $a | inl($L.drop1) then go($i + 2; $out; $lead)
+          elif $a | inl($L.one) then go($i + 2; $out + $argv[$i:$i + 2]; $lead)
+          elif $a | inl($L.many + $L.dropmany) then
+            ([range($i + 1; $argv | length) | select($argv[.] | isopt)] | first // ($argv | length)) as $j
+            | go($j; (if $a | inl($L.many) then $out + $argv[$i:$j] else $out end); $lead)
+          elif $a | inl($L.opt + $L.dropopt) then
+            (if $i + 1 < ($argv | length) and ($argv[$i + 1] | isopt | not) then $i + 2 else $i + 1 end) as $j
+            | go($j; (if $a | inl($L.opt) then $out + $argv[$i:$j] else $out end); $lead)
+          elif $a | isopt then go($i + 1; $out + [$a]; $lead)
+          elif $lead and ($a | inl($L.subs)) then null
+          else go($i + 1; $out; false)
+          end
+        end;
+      go(1; []; true)
+    | if . == null then empty
+      elif $p == "claude" then ["claude"] + . + ["--resume", $sid]
+      else ["codex", "resume"] + . + [$sid] end
+    | map(if test("^[A-Za-z0-9_@%+=:,./-]+$") then . else @sh end) | join(" ")'
+}
+
+shell_quote() { printf '%s' "$1" | jq -Rr 'if test("^[A-Za-z0-9_@%+=:,./-]+$") then . else @sh end'; }
+
+# "<address> <pid>" of each tab session of the provider with a session id.
+restart_targets() { # provider
+  local provider=$1 hc addr info pid
+  hc=$(hc_bin)
+  command -v "$hc" >/dev/null 2>&1 || { rlog "$provider: hc not found; nothing to restart"; return 0; }
+  while IFS= read -r addr; do
+    info=$("$hc" get "$addr" --json 2>/dev/null) || continue
+    pid=$(jq -r --arg p "$provider" 'select(.parent == null and .state == "live"
+        and ((.labels // {}) | has("papel") | not))
+      | .foreground // empty
+      | select(((.argv[0] // "") | split("/") | last) == $p or .name == $p)
+      | .pid // empty | numbers' <<<"$info" 2>/dev/null)
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    if session_id "$provider" "$pid" >/dev/null; then
+      echo "$addr $pid"
+    else
+      rlog "$addr: $provider pid $pid has no session id that can be resumed; not restarted"
+    fi
+  done < <("$hc" ls --json 2>/dev/null | jq -r '.terminals[]?
+    | select(.state == "live" and .parent == null and ((.address // "") | contains("/") | not))
+    | .address' 2>/dev/null)
+}
+
+# The program in the foreground is still that provider.
+fg_is_provider() { # provider json
+  jq -e --arg p "$1" '.foreground // {} | ((.argv[0] // "") | split("/") | last) == $p or .name == $p' \
+    <<<"$2" >/dev/null 2>&1
+}
+
+restart_one() { # provider account address pid
+  local provider=$1 account=$2 addr=$3 pid=$4 hc info state fg start waited="" sid cmd cwd shell_cwd tries=0
+  local poll=${AGENT_ACCOUNT_RESTART_POLL:-1} max=${AGENT_ACCOUNT_RESTART_MAX_WAIT:-21600}
+  hc=$(hc_bin)
+  start=$(date +%s)
+  while :; do
+    info=$("$hc" get "$addr" --json 2>/dev/null) ||
+      { rlog "$addr: the terminal is gone; not restarted"; return; }
+    fg=$(jq -r '.foreground.pid // empty' <<<"$info")
+    [[ $fg == "$pid" ]] ||
+      { rlog "$addr: $provider pid $pid ended before its turn did; not restarted"; return; }
+    state=$(jq -r '.status.state // empty' <<<"$info")
+    case $state in idle | done) break ;; esac
+    if (($(date +%s) - start >= max)); then
+      rlog "$addr: still $state after ${max}s; not restarted"
+      return
+    fi
+    [[ $waited == "$state" ]] || rlog "$addr: $provider is ${state:-unknown}; waiting for its turn to end"
+    waited=$state
+    "$hc" wait --timeout 60 "$addr" >/dev/null 2>&1
+    # A blocked session ends hc wait at once: do not ask again every second.
+    if [[ $state == blocked ]]; then sleep "${AGENT_ACCOUNT_RESTART_BLOCKED_POLL:-10}"; else sleep "$poll"; fi
+  done
+  sid=$(session_id "$provider" "$pid") ||
+    { rlog "$addr: no session id for $provider pid $pid; not restarted"; return; }
+  cmd=$(restart_command "$provider" "$sid" <<<"$info")
+  [[ -n $cmd ]] || { rlog "$addr: $provider runs a subcommand, not a session; not restarted"; return; }
+  cwd=$(jq -r '.foreground.cwd // empty' <<<"$info")
+  "$hc" send "$addr" "/exit" >/dev/null 2>&1 ||
+    { rlog "$addr: could not send /exit; not restarted"; return; }
+  while :; do
+    sleep "$poll"
+    info=$("$hc" get "$addr" --json 2>/dev/null) ||
+      { rlog "$addr: the terminal is gone after /exit"; return; }
+    fg=$(jq -r '.foreground.pid // empty' <<<"$info")
+    if [[ -n $fg && $fg != "$pid" ]] && ! fg_is_provider "$provider" "$info"; then
+      break
+    fi
+    tries=$((tries + 1))
+    if ((tries >= ${AGENT_ACCOUNT_RESTART_EXIT_TRIES:-30})); then
+      rlog "$addr: $provider did not exit after /exit; not restarted"
+      return
+    fi
+  done
+  shell_cwd=$(jq -r '.foreground.cwd // empty' <<<"$info")
+  [[ -n $cwd && $cwd != "$shell_cwd" ]] && cmd="cd $(shell_quote "$cwd") && $cmd"
+  if "$hc" send "$addr" "$cmd" >/dev/null 2>&1; then
+    rlog "$addr: restarted on $account: $cmd"
+  else
+    rlog "$addr: could not send the restart command: $cmd"
+  fi
+}
+
+# Detached worker: one restart per terminal, side by side.
+cmd_restart_run() { # provider account address pid ...
+  local provider=$1 account=$2
+  shift 2
+  rlog "$provider: restart of $(($# / 2)) sessions on $account started (pid $$)"
+  while [[ $# -ge 2 ]]; do
+    restart_one "$provider" "$account" "$1" "$2" &
+    shift 2
+  done
+  wait
+  rlog "$provider: restart on $account finished"
+}
+
+# Start the worker out of this process group, so it outlives the use call and
+# its terminal.
+detach() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" &
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'use POSIX qw(setsid); setsid(); exec @ARGV or exit 127' -- "$@" &
+  else
+    nohup "$@" &
+  fi
+}
+
+start_restart() { # provider account
+  local provider=$1 account=$2 log line targets=() n
+  log=$(restart_log_file)
+  mkdir -p "${log%/*}" 2>/dev/null
+  if [[ $provider == cursor ]]; then
+    echo "agent-account: --restart restarts claude and codex sessions; cursor sessions keep running" >&2
+  else
+    while IFS= read -r line; do
+      [[ -n $line ]] && targets+=($line)
+    done < <(restart_targets "$provider")
+  fi
+  n=$((${#targets[@]} / 2))
+  if ((n > 0)); then
+    (
+      trap '' HUP
+      detach "$self" _restart-run "$provider" "$account" "${targets[@]}"
+    ) </dev/null >>"$log" 2>&1
+  fi
+  echo "$n $provider sessions will restart on $account when idle"
+}
+
 cmd=${1:-}
 [[ $# -gt 0 ]] && shift
 case $cmd in
@@ -623,5 +904,6 @@ case $cmd in
   remove | rm) cmd_remove "$@" ;;
   env) cmd_env "$@" ;;
   usage) cmd_usage "$@" ;;
+  _restart-run) cmd_restart_run "$@" ;;
   *) usage >&2; die "unknown command '$cmd'" ;;
 esac
