@@ -39,6 +39,9 @@ Usage: agent-account <command>
   remove <provider> <id> [--yes]      delete the home of <id>
   env <provider> [<id>]               CLAUDE_CONFIG_DIR=... / CODEX_HOME=... /
                                       CURSOR_API_KEY_FILE=... for scripts
+  usage cursor [--json] [--max-age <s>]
+                                      the plan usage of each Cursor account
+                                      (cached for --max-age seconds, default 300)
 
 Providers: claude, codex, cursor. Account "default" is the normal home
 (~/.claude, ~/.codex, Cursor's own login).
@@ -421,6 +424,187 @@ cmd_env() {
   echo "$var=$value"
 }
 
+# --- usage cursor ---------------------------------------------------------------
+#
+# cursor-agent reads its usage from Cursor's dashboard API: Connect RPCs with a
+# JSON body at api2.cursor.sh, with the login's access token as a bearer
+# token. The default login keeps that token in the macOS Keychain (service
+# cursor-access-token, account cursor-user) or, on Linux, in
+# ${XDG_CONFIG_HOME:-~/.config}/cursor/auth.json. An API key is first
+# exchanged for an access token, as cursor-agent does with CURSOR_API_KEY.
+# Only read calls. A token or key never goes on a command line: curl reads it
+# from its stdin as a config file.
+
+cursor_api() { echo "${AGENT_ACCOUNT_CURSOR_API:-https://api2.cursor.sh}"; }
+
+file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# A secret goes into a quoted curl config line: no quote, backslash or space.
+safe_secret() { [[ ${1:-} =~ ^[A-Za-z0-9._~+/=:-]+$ ]]; }
+
+# POST a JSON body with a bearer secret. Prints the body, then the HTTP code
+# on the last line.
+cursor_post() { # secret path body
+  printf 'header = "Authorization: Bearer %s"\n' "$1" |
+    curl -sS -m "${AGENT_ACCOUNT_CURSOR_TIMEOUT:-15}" -K - -X POST \
+      -H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' \
+      --data "$3" -w '\n%{http_code}' "$(cursor_api)$2" 2>/dev/null
+}
+
+# The exp claim of a JWT, 0 when it has none. The token goes to jq on a pipe.
+jwt_exp() {
+  printf '%s' "$1" | jq -Rr 'split(".") | .[1] // ""
+    | gsub("-"; "+") | gsub("_"; "/") | . + ("=" * ((4 - length % 4) % 4))
+    | (try (@base64d | fromjson | .exp // 0) catch 0) | numbers // 0' 2>/dev/null || echo 0
+}
+
+# The login of the default Cursor account: "token <t>", "key <k>" or nothing.
+cursor_default_login() {
+  local token="" key="" file
+  if [[ $(uname -s) == Darwin ]]; then
+    token=$(security find-generic-password -s cursor-access-token -a cursor-user -w 2>/dev/null) || token=""
+    [[ -n $token ]] ||
+      key=$(security find-generic-password -s cursor-api-key -a cursor-user -w 2>/dev/null) || key=""
+  else
+    file=${XDG_CONFIG_HOME:-$HOME/.config}/cursor/auth.json
+    if [[ -r $file ]]; then
+      token=$(jq -r '.accessToken // empty | strings' "$file" 2>/dev/null) || token=""
+      key=$(jq -r '.apiKey // empty | strings' "$file" 2>/dev/null) || key=""
+    fi
+  fi
+  if [[ -n $token ]]; then
+    echo "token $token"
+  elif [[ -n $key ]]; then
+    echo "key $key"
+  fi
+}
+
+usage_error() { # id updated-at message
+  jq -nc --arg id "$1" --arg now "$2" --arg e "$3" '{provider: "cursor", id: $id,
+    plan: null, used_percent: null, spent_usd: null, limit_usd: null, resets_at: null,
+    window_minutes: null, updated_at: $now, error: $e}'
+}
+
+# One Cursor account as a usage object. Every failure is an object with
+# error set, never an exit.
+cursor_usage_fetch() { # id
+  local id=$1 now login="" kind secret token="" out code body usage plan="{}" exp
+  now=$(now_iso)
+  fail() { usage_error "$id" "$now" "$1"; }
+  command -v curl >/dev/null 2>&1 || { fail "curl not found"; return; }
+  if [[ $id == default ]]; then
+    login=$(cursor_default_login)
+    [[ -n $login ]] || { fail "no Cursor login found (run: cursor-agent login)"; return; }
+  else
+    local keyfile
+    keyfile="$(aa_home cursor "$id")/api-key"
+    [[ -r $keyfile ]] && IFS= read -r secret <"$keyfile"
+    [[ -n ${secret:-} ]] || { fail "no API key (run: agent-account login cursor $id)"; return; }
+    login="key $secret"
+  fi
+  kind=${login%% *}
+  secret=${login#* }
+  safe_secret "$secret" || { fail "the stored $kind has an unexpected format"; return; }
+  if [[ $kind == key ]]; then
+    out=$(cursor_post "$secret" /auth/exchange_user_api_key '{}') || { fail "network error"; return; }
+    code=${out##*$'\n'}
+    [[ $code == 200 ]] || { fail "the API key was refused (HTTP $code)"; return; }
+    token=$(printf '%s' "${out%$'\n'*}" | jq -r '.accessToken // empty | strings' 2>/dev/null)
+    [[ -n $token ]] || { fail "unknown answer to the API key exchange"; return; }
+    safe_secret "$token" || { fail "the access token has an unexpected format"; return; }
+  else
+    token=$secret
+  fi
+  exp=$(jwt_exp "$token")
+  if [[ $exp =~ ^[0-9]+$ ]] && ((exp > 0 && exp < $(date +%s))); then
+    fail "the login expired (start cursor-agent once to refresh it)"
+    return
+  fi
+  out=$(cursor_post "$token" /aiserver.v1.DashboardService/GetCurrentPeriodUsage '{}') ||
+    { fail "network error"; return; }
+  code=${out##*$'\n'}
+  [[ $code == 200 ]] || { fail "usage request failed (HTTP $code)"; return; }
+  usage=${out%$'\n'*}
+  out=$(cursor_post "$token" /aiserver.v1.DashboardService/GetPlanInfo '{}') && {
+    code=${out##*$'\n'}
+    [[ $code == 200 ]] && plan=${out%$'\n'*}
+  }
+  jq -nc --arg id "$id" --arg now "$now" --argjson u "$usage" --argjson p "$plan" '
+    def num: if type == "number" then . elif type == "string" then (tonumber? // null) else null end;
+    if ($u | type) != "object" or (($u.planUsage == null) and ($u.billingCycleEnd == null)) then
+      error("unknown")
+    else . end
+    | ($u.billingCycleStart | num) as $s | ($u.billingCycleEnd | num) as $e
+    | ($u.planUsage // {}) as $pu
+    | (($pu.limit | num) // 0) as $lim | ($pu.totalSpend | num) as $sp
+    | {provider: "cursor", id: $id,
+       plan: (($p.planInfo.planName // null) | if . == "" then null else . end),
+       used_percent: (($pu.totalPercentUsed | num)
+         // (if $lim > 0 then (($sp // 0) / $lim * 100) else null end)),
+       spent_usd: (if $sp != null then $sp / 100 elif $lim > 0 then 0 else null end),
+       limit_usd: (if $lim > 0 then $lim / 100 else null end),
+       resets_at: (if $e then ($e / 1000 | floor | todate) else null end),
+       window_minutes: (if $s and $e and $e > $s then (($e - $s) / 60000 + 0.5 | floor) else null end),
+       updated_at: $now, error: null}' 2>/dev/null || fail "unknown answer from the usage API"
+}
+
+usage_cache_file() { # id
+  echo "${XDG_CACHE_HOME:-$HOME/.cache}/agent-usage/cursor/$1.json"
+}
+
+# A reading younger than max-age comes from the cache; else it is fetched and
+# cached (an error too, so a broken account is not asked again every second).
+cursor_usage_one() { # id max-age
+  local id=$1 max=$2 file dir mtime out tmp
+  file=$(usage_cache_file "$id")
+  if [[ -r $file ]] && ((max > 0)); then
+    mtime=$(file_mtime "$file")
+    if [[ $mtime =~ ^[0-9]+$ ]] && (($(date +%s) - mtime < max)) &&
+      out=$(jq -ce 'select(type == "object" and .provider == "cursor")' "$file" 2>/dev/null); then
+      printf '%s\n' "$out"
+      return
+    fi
+  fi
+  out=$(cursor_usage_fetch "$id")
+  printf '%s\n' "$out"
+  dir=${file%/*}
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmp=$(mktemp "$dir/.$id.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n' "$out" >"$tmp"; then mv -f "$tmp" "$file"; else rm -f "$tmp"; fi
+}
+
+cmd_usage() {
+  local provider="" json=0 max=300 id all
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --json) json=1 ;;
+      --max-age)
+        [[ $# -ge 2 ]] || die "--max-age needs a value"
+        max=$2
+        shift
+        ;;
+      --max-age=*) max=${1#--max-age=} ;;
+      -*) die "unknown option '$1'" ;;
+      *) [[ -z $provider ]] || die "too many arguments"; provider=$1 ;;
+    esac
+    shift
+  done
+  [[ $provider == cursor ]] || die "usage reads only cursor accounts (agent-account usage cursor --json)"
+  [[ $max =~ ^[0-9]+$ ]] || die "--max-age takes a number of seconds"
+  all=$(for id in $(account_names cursor); do cursor_usage_one "$id" "$max"; done | jq -sc .) ||
+    die "could not read the cursor usage"
+  if ((json)); then
+    echo "$all"
+    return
+  fi
+  jq -r '.[] | "  \(.id)  " + (if .error then "! \(.error)" else
+      "\(.plan // "-")  " + (if .used_percent then "\(.used_percent * 10 | floor / 10)%" else "-" end)
+      + (if .spent_usd then "  $\(.spent_usd)" + (if .limit_usd then " of $\(.limit_usd)" else "" end) else "" end)
+      + (if .resets_at then "  resets \(.resets_at)" else "" end) end)' <<<"$all"
+}
+
 cmd=${1:-}
 [[ $# -gt 0 ]] && shift
 case $cmd in
@@ -438,5 +622,6 @@ case $cmd in
   login) cmd_login "$@" ;;
   remove | rm) cmd_remove "$@" ;;
   env) cmd_env "$@" ;;
+  usage) cmd_usage "$@" ;;
   *) usage >&2; die "unknown command '$cmd'" ;;
 esac

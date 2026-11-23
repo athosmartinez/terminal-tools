@@ -368,6 +368,120 @@ chmod 700 "$A/claude/broken"
 "$AA" remove claude broken --yes >/dev/null 2>&1
 rm -f "$HOME/.claude/entry-after-chmod"
 
+# --- usage cursor ------------------------------------------------------------------
+# A fake curl answers per bearer token and logs its argv and the URL; a fake
+# security serves the default login. No call leaves the machine.
+
+F=$WORK/fakes
+mkdir -p "$F"
+jwt() { # exp
+  printf 'eyJhbGciOiJub25lIn0.%s.c2ln' "$(printf '{"exp":%s}' "$1" | base64 | tr -d '\n=' | tr '+/' '-_')"
+}
+TOK_DEFAULT=$(jwt 4102444800)
+TOK_OLD=$(jwt 1000)
+cat >"$F/security" <<EOF
+#!/usr/bin/env bash
+[[ \$* == *"-s cursor-access-token -a cursor-user -w"* ]] && { cat "$F/keychain-token" 2>/dev/null; exit 0; }
+exit 44
+EOF
+cat >"$F/curl" <<'EOF'
+#!/usr/bin/env bash
+F=$(dirname "$0")
+printf '%s\n' "$*" >>"$F/curl-argv"
+cfg=$(cat)
+url=${*: -1}
+echo "$url" >>"$F/curl-urls"
+[[ $url == http://unreachable.invalid/* ]] && { echo "curl: (6) Could not resolve host" >&2; exit 6; }
+auth=${cfg#*Bearer }
+auth=${auth%\"*}
+case $url in
+  */auth/exchange_user_api_key)
+    if [[ $auth == key-team ]]; then printf '{"accessToken":"tok-team","refreshToken":"r"}\n200'
+    else printf '{}\n401'; fi ;;
+  */GetCurrentPeriodUsage)
+    case $auth in
+      tok-team) printf '{"billingCycleStart":"1700000000000","billingCycleEnd":"1702592000000","planUsage":{"totalSpend":1234,"limit":4000}}\n200' ;;
+      tok-team2) printf '{"something":"else"}\n200' ;;
+      eyJ*) printf '{"billingCycleStart":"1794943725438","billingCycleEnd":"1795548525438","planUsage":{"totalPercentUsed":59.5},"enabled":true}\n200' ;;
+      *) printf '{}\n401' ;;
+    esac ;;
+  */GetPlanInfo)
+    case $auth in
+      tok-team) printf '{"planInfo":{"planName":"Pro"}}\n200' ;;
+      eyJ*) printf '{"planInfo":{"planName":"Super"}}\n200' ;;
+      *) printf '{}\n500' ;;
+    esac ;;
+  *) printf 'no\n404' ;;
+esac
+EOF
+chmod +x "$F/security" "$F/curl"
+printf '%s' "$TOK_DEFAULT" >"$F/keychain-token"
+mkdir -p "$XDG_CONFIG_HOME/cursor"
+printf '{"accessToken":"%s"}\n' "$TOK_DEFAULT" >"$XDG_CONFIG_HOME/cursor/auth.json"
+"$AA" add cursor team >/dev/null
+(umask 077 && printf 'key-team\n' >"$A/cursor/team/api-key")
+"$AA" add cursor nokey >/dev/null
+"$AA" add cursor bad >/dev/null
+(umask 077 && printf 'key-bad\n' >"$A/cursor/bad/api-key")
+usage() { PATH=$F:$PATH "$AA" usage "$@"; }
+
+json=$(usage cursor --json --max-age 0)
+check_eq "usage: exit 0 with failing accounts" 0 $?
+check_eq "usage: one object per cursor account, default first" '["default","bad","nokey","team"]' \
+  "$(jq -c 'map(.id)' <<<"$json")"
+check_eq "usage: the default login from its token" \
+  '{"provider":"cursor","id":"default","plan":"Super","used_percent":59.5,"spent_usd":null,"limit_usd":null,"resets_at":"2026-11-24T19:28:45Z","window_minutes":10080,"error":null}' \
+  "$(jq -c '.[0] | del(.updated_at)' <<<"$json")"
+check_eq "usage: an API key account: spend and limit in dollars, percent from them" \
+  '{"plan":"Pro","used_percent":30.85,"spent_usd":12.34,"limit_usd":40,"resets_at":"2023-12-14T22:13:20Z","window_minutes":43200,"error":null}' \
+  "$(jq -c '.[] | select(.id == "team") | del(.provider, .id, .updated_at)' <<<"$json")"
+check_eq "usage: a refused key is an error with null numbers" \
+  '{"plan":null,"used_percent":null,"spent_usd":null,"error":"the API key was refused (HTTP 401)"}' \
+  "$(jq -c '.[] | select(.id == "bad") | {plan, used_percent, spent_usd, error}' <<<"$json")"
+check "usage: an account with no key says how to add it" "agent-account login cursor nokey" \
+  "$(jq -r '.[] | select(.id == "nokey") | .error' <<<"$json")"
+check_true "usage: updated_at is an ISO time" \
+  jq -e 'all(.[]; .updated_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$"))' <<<"$json" >/dev/null
+check_true "usage: no token or key on the curl command line" \
+  test -z "$(grep -E 'key-|tok-|eyJ' "$F/curl-argv")"
+check_true "usage: the API key is exchanged for a token" grep -q '/auth/exchange_user_api_key' "$F/curl-urls"
+check_true "usage: no token or key in the output" test -z "$(grep -E 'key-|tok-|eyJ' <<<"$json")"
+check_eq "usage: each reading is cached per account" \
+  "bad.json default.json nokey.json team.json" "$(cd "$XDG_CACHE_HOME/agent-usage/cursor" && echo *)"
+
+: >"$F/curl-urls"
+json2=$(usage cursor --json)
+check_eq "usage: a young cache makes no network call" "" "$(cat "$F/curl-urls")"
+check_eq "usage: the cached readings come back" "$json" "$json2"
+printf '{"provider":"cursor","id":"team","error":null,"used_percent":1}\n' >"$XDG_CACHE_HOME/agent-usage/cursor/team.json"
+touch -t 202001010000 "$XDG_CACHE_HOME/agent-usage/cursor/team.json"
+usage cursor --json --max-age 300 >/dev/null
+check_eq "usage: an old reading is fetched again" 1 "$(grep -c GetCurrentPeriodUsage "$F/curl-urls")"
+
+printf '%s' "$TOK_OLD" >"$F/keychain-token"
+printf '{"accessToken":"%s"}\n' "$TOK_OLD" >"$XDG_CONFIG_HOME/cursor/auth.json"
+check "usage: an expired login is an error, not a call" "login expired" \
+  "$(usage cursor --json --max-age 0 | jq -r '.[0].error')"
+: >"$F/keychain-token"
+rm -f "$XDG_CONFIG_HOME/cursor/auth.json"
+check "usage: no default login is an error" "no Cursor login" \
+  "$(usage cursor --json --max-age 0 | jq -r '.[0].error')"
+printf 'tok-team2\n' >"$A/cursor/team/api-key"
+sed -i.bak 's/key-team/tok-team2/' "$F/curl" && rm -f "$F/curl.bak"
+sed -i.bak 's/"accessToken":"tok-team"/"accessToken":"tok-team2"/' "$F/curl" && rm -f "$F/curl.bak"
+check_eq "usage: an unknown answer is an error" "unknown answer from the usage API" \
+  "$(usage cursor --json --max-age 0 | jq -r '.[] | select(.id == "team") | .error')"
+printf '%s' "$TOK_DEFAULT" >"$F/keychain-token"
+printf '{"accessToken":"%s"}\n' "$TOK_DEFAULT" >"$XDG_CONFIG_HOME/cursor/auth.json"
+json=$(AGENT_ACCOUNT_CURSOR_API=http://unreachable.invalid usage cursor --json --max-age 0)
+check_eq "usage: a network failure still exits 0" 0 $?
+check_eq "usage: a network failure is an error" "network error" "$(jq -r '.[0].error' <<<"$json")"
+usage claude --json >/dev/null 2>&1
+check_eq "usage: only cursor is supported" 1 $?
+usage cursor --max-age x >/dev/null 2>&1
+check_eq "usage: --max-age takes seconds" 1 $?
+for id in team nokey bad; do "$AA" remove cursor "$id" --yes >/dev/null; done
+
 # --- install.sh ------------------------------------------------------------------
 
 BIN=$WORK/bin SHIMS=$WORK/inst-shims "$REPO/install.sh" >/dev/null 2>&1
