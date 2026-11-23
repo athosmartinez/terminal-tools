@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 #
-# agent-account — keep several logged-in Claude Code and Codex accounts and
-# choose the one the NEXT session uses. A running session keeps its account.
+# agent-account — keep several logged-in Claude Code, Codex and Cursor
+# accounts and choose the one the NEXT session uses. A running session keeps
+# its account.
 #
-# Each account other than "default" has its own home folder, which is the
-# CLAUDE_CONFIG_DIR / CODEX_HOME of its sessions. The home links every entry
-# of ~/.claude or ~/.codex (settings, skills, hooks, sessions...) except the
-# login, so only the login differs. The shim installed as "claude" and
-# "codex" (agent-shim) reads the active account at every start.
+# Each account other than "default" has its own home folder. For Claude Code
+# and Codex it is the CLAUDE_CONFIG_DIR / CODEX_HOME of its sessions, and it
+# links every entry of ~/.claude or ~/.codex (settings, skills, hooks,
+# sessions...) except the login, so only the login differs. For Cursor it
+# holds only an API key. The shim installed as "claude", "codex",
+# "cursor-agent" and "agent" (agent-shim) reads the active account at every
+# start. Each account can also have a label (shown to people) and a tag.
 
 set -uo pipefail
 
@@ -26,15 +29,20 @@ usage() {
   cat <<'EOF'
 Usage: agent-account <command>
 
-  list [--json]                     the accounts of each provider; * = active
-  use <provider> <name>             new sessions use <name>
-  add <provider> <name>             create the home of <name>; prints the login step
-  login <provider> <name>           log in to <name> (interactive)
-  remove <provider> <name> [--yes]  delete the home of <name>
-  env <provider> [<name>]           CLAUDE_CONFIG_DIR=... / CODEX_HOME=... for scripts
+  list [--json]                       the accounts of each provider; * = active
+  use <provider> <id|label>           new sessions use that account
+  add <provider> <id> [--label <text>] [--tag <text>]
+                                      create the home of <id>; prints the login step
+  set <provider> <id> [--label <text>] [--tag <text>]
+                                      change the label or the tag ("" clears it)
+  login <provider> <id>               log in to <id> (interactive)
+  remove <provider> <id> [--yes]      delete the home of <id>
+  env <provider> [<id>]               CLAUDE_CONFIG_DIR=... / CODEX_HOME=... /
+                                      CURSOR_API_KEY_FILE=... for scripts
 
-Providers: claude, codex. Account "default" is ~/.claude or ~/.codex.
-Names: lowercase letters, digits, ".", "_" and "-", at most 32 characters.
+Providers: claude, codex, cursor. Account "default" is the normal home
+(~/.claude, ~/.codex, Cursor's own login).
+Ids: lowercase letters, digits, ".", "_" and "-", at most 32 characters.
 Registry: $AGENT_ACCOUNTS_HOME (default ~/.local/share/agent-accounts).
 EOF
 }
@@ -45,20 +53,55 @@ die() {
 }
 
 need_provider() {
-  aa_valid_provider "${1:-}" || die "unknown provider '${1:-}' (use claude or codex)"
+  aa_valid_provider "${1:-}" || die "unknown provider '${1:-}' (use claude, codex or cursor)"
 }
 
-# An account that exists: "default", or a valid name with a home folder.
+# An account that exists: "default", or a valid id with a home folder.
+account_exists() {
+  [[ $2 == default ]] && return 0
+  aa_valid_name "$2" && [[ -d $(aa_home "$1" "$2") ]]
+}
+
 need_account() {
   local provider=$1 name=${2:-}
-  [[ -n $name ]] || die "missing account name"
+  [[ -n $name ]] || die "missing account id"
   [[ $name == default ]] && return 0
-  aa_valid_name "$name" || die "'$name' is not a valid account name"
-  [[ -d $(aa_home "$provider" "$name") ]] ||
+  aa_valid_name "$name" || die "'$name' is not a valid account id"
+  account_exists "$provider" "$name" ||
     die "no $provider account '$name' (create it with: agent-account add $provider $name)"
 }
 
-# default first, then the account folders by name.
+# accounts.json as an object; {} when it is missing or broken.
+meta_json() {
+  local file
+  file=$(aa_meta_file "$1")
+  if [[ -s $file ]] && jq -ce 'if type == "object" then . else error end' "$file" 2>/dev/null; then
+    return 0
+  fi
+  echo '{}'
+}
+
+# An id, or a label that names exactly one existing account.
+resolve_account() {
+  local provider=$1 arg=${2:-} id ids=() count=0
+  [[ -n $arg ]] || die "missing account id or label"
+  if account_exists "$provider" "$arg"; then
+    echo "$arg"
+    return
+  fi
+  while IFS= read -r id; do
+    account_exists "$provider" "$id" || continue
+    ids+=("$id")
+    count=$((count + 1))
+  done < <(meta_json "$provider" | jq -r --arg l "$arg" 'to_entries[] | select(.value.label == $l) | .key')
+  case $count in
+    1) echo "${ids[0]}" ;;
+    0) die "no $provider account with the id or label '$arg' (see: agent-account list)" ;;
+    *) die "the label '$arg' names several $provider accounts (${ids[*]}); use the id" ;;
+  esac
+}
+
+# default first, then the account folders by id.
 account_names() {
   local dir entry name
   echo default
@@ -71,67 +114,86 @@ account_names() {
   done
 }
 
-# One account as a JSON object. Never prints a token: only the email, the
-# account id and the plan leave jq.
+# One account as a JSON object. Never prints a token or a key: only the
+# email, the account id and the plan leave jq.
 account_json() {
-  local provider=$1 name=$2 home file filter
+  local provider=$1 name=$2 meta=${3:-} home file="" filter logged=null
+  [[ -n $meta ]] || meta=$(meta_json "$provider")
   home=$(aa_home "$provider" "$name")
+  local head='($meta[$name] // {}) as $m
+    | {name: $name, id: $name, label: ($m.label // $name), tag: ($m.tag // null), home: $home}'
   case $provider in
     claude)
       file="$home/.claude.json"
       [[ $name == default ]] && file="$HOME/.claude.json"
-      filter='{name: $name, home: $home,
+      filter="$head"' + {
         email: (.oauthAccount.emailAddress // null),
         logged_in: (.oauthAccount != null),
         account_id: null}'
       ;;
     codex)
       file="$home/auth.json"
-      filter='
-        ((.tokens.id_token // "") | split(".")) as $parts
+      filter='((.tokens.id_token // "") | split(".")) as $parts
         | (if ($parts | length) >= 2 then
              ($parts[1] | gsub("-"; "+") | gsub("_"; "/")
               | . + ("=" * ((4 - length % 4) % 4))
               | try (@base64d | fromjson) catch null)
            else null end) as $p
-        | {name: $name, home: $home,
+        | '"$head"' + {
            email: ($p.email // $p["https://api.openai.com/profile"].email // null),
            logged_in: (.tokens != null or .OPENAI_API_KEY != null),
            account_id: ($p["https://api.openai.com/auth"].chatgpt_account_id // null),
            plan: ($p["https://api.openai.com/auth"].chatgpt_plan_type // null)}'
       ;;
+    cursor)
+      # No network and no key read: the email is the label the user set, and
+      # an account is logged in when its key file is not empty. The default
+      # login lives in the Keychain, so it stays unknown (null).
+      if [[ $name != default ]]; then
+        if [[ -s $home/api-key ]]; then logged=true; else logged=false; fi
+      fi
+      filter="$head"' + {email: ($m.label // null), logged_in: $logged, account_id: null}'
+      ;;
   esac
-  if [[ -r $file ]] && jq -c --arg name "$name" --arg home "$home" "$filter" "$file" 2>/dev/null; then
+  if [[ -n $file && -r $file ]] &&
+    jq -c --arg name "$name" --arg home "$home" --argjson meta "$meta" --argjson logged "$logged" \
+      "$filter" "$file" 2>/dev/null; then
     return 0
   fi
-  echo '{}' | jq -c --arg name "$name" --arg home "$home" "$filter"
+  echo '{}' | jq -c --arg name "$name" --arg home "$home" --argjson meta "$meta" \
+    --argjson logged "$logged" "$filter"
 }
 
 provider_json() {
-  local provider=$1 name
+  local provider=$1 name meta
+  meta=$(meta_json "$provider")
   for name in $(account_names "$provider"); do
-    account_json "$provider" "$name"
+    account_json "$provider" "$name" "$meta"
   done | jq -sc --arg active "$(aa_active "$provider")" '{active: $active, accounts: .}'
 }
 
 cmd_list() {
   local json
   json=$(jq -n --argjson claude "$(provider_json claude)" --argjson codex "$(provider_json codex)" \
-    '{claude: $claude, codex: $codex}') || die "could not read the accounts"
+    --argjson cursor "$(provider_json cursor)" \
+    '{claude: $claude, codex: $codex, cursor: $cursor}') || die "could not read the accounts"
   if [[ ${1:-} == --json ]]; then
     echo "$json"
     return
   fi
-  local provider mark name email state home
+  local provider mark label tag email state id
   for provider in $AA_PROVIDERS; do
     echo "$provider"
-    while IFS=$'\t' read -r mark name email state home; do
-      printf '  %s %-14s %-32s %-16s %s\n' "$mark" "$name" "$email" "$state" "$home"
+    while IFS=$'\t' read -r mark label tag email state id; do
+      printf '  %s %-18s %-10s %-32s %-16s %s\n' "$mark" "$label" "$tag" "$email" "$state" "$id"
     done < <(jq -r --arg p "$provider" '.[$p] as $x | $x.accounts[]
-      | [(if .name == $x.active then "*" else " " end), .name, (.email // "-"),
-         (if .logged_in then "logged in" else "not logged in" end)
-         + (if .plan then " " + .plan else "" end), .home] | @tsv' <<<"$json")
-    if ! jq -e --arg p "$provider" '.[$p] as $x | any($x.accounts[]; .name == $x.active)' \
+      | [(if .id == $x.active then "*" else " " end), .label, (.tag // "-"),
+         (if $p == "cursor" then "-" else (.email // "-") end),
+         (if .logged_in == null then "login unknown"
+          elif .logged_in then (if $p == "cursor" and .id != "default" then "key set" else "logged in" end)
+          else (if $p == "cursor" then "no key" else "not logged in" end) end)
+         + (if .plan then " " + .plan else "" end), "id: " + .id] | @tsv' <<<"$json")
+    if ! jq -e --arg p "$provider" '.[$p] as $x | any($x.accounts[]; .id == $x.active)' \
       <<<"$json" >/dev/null; then
       echo "  ! the active account '$(aa_active "$provider")' has no home: new sessions fail"
     fi
@@ -139,9 +201,9 @@ cmd_list() {
 }
 
 cmd_use() {
-  local provider=${1:-} name=${2:-} dir tmp email
+  local provider=${1:-} name dir tmp who
   need_provider "$provider"
-  need_account "$provider" "$name"
+  name=$(resolve_account "$provider" "${2:-}") || exit 1
   dir="$(aa_root)/$provider"
   mkdir -p "$dir" || die "cannot create $dir"
   tmp=$(mktemp "$dir/.active.XXXXXX") || die "cannot write in $dir"
@@ -149,41 +211,120 @@ cmd_use() {
     rm -f "$tmp"
     die "cannot write $dir/active"
   fi
-  email=$(account_json "$provider" "$name" | jq -r '.email // "not logged in"')
-  echo "$provider: new sessions use $name ($email); running sessions keep their account"
+  who=$(account_json "$provider" "$name" |
+    jq -r '.email // (if .logged_in == false then "not logged in" else .label end)')
+  echo "$provider: new sessions use $name ($who); running sessions keep their account"
 }
 
 login_hint() {
   local provider=$1 name=$2 home=$3
-  echo "Log in, in your own terminal:"
   case $provider in
     claude)
+      echo "Log in, in your own terminal:"
       echo "  agent-account login claude $name"
       echo "  (the same as: CLAUDE_CONFIG_DIR='$home' claude auth login)"
       ;;
     codex)
+      echo "Log in, in your own terminal:"
       echo "  agent-account login codex $name"
       echo "  (the same as: CODEX_HOME='$home' codex login)"
       echo "  or copy an auth.json you already have: cp <auth.json> '$home/auth.json'"
+      ;;
+    cursor)
+      echo "Save its API key (Cursor dashboard, API keys), in your own terminal:"
+      echo "  agent-account login cursor $name"
+      echo "  (the same as: ( umask 077; read -rs k; printf '%s\\n' \"\$k\" > '$home/api-key' ))"
+      echo "  The key is read without echo; it never goes to the shell history or the screen."
       ;;
   esac
   echo "Then: agent-account use $provider $name"
 }
 
+# Split the arguments of add and set into positional ones and the options
+# --label / --tag. A given option with an empty value clears it.
+parse_meta_args() {
+  POS=()
+  LABEL_SET=0 LABEL=""
+  TAG_SET=0 TAG=""
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --label)
+        [[ $# -ge 2 ]] || die "--label needs a value"
+        LABEL_SET=1 LABEL=$2
+        shift
+        ;;
+      --label=*) LABEL_SET=1 LABEL=${1#--label=} ;;
+      --tag)
+        [[ $# -ge 2 ]] || die "--tag needs a value"
+        TAG_SET=1 TAG=$2
+        shift
+        ;;
+      --tag=*) TAG_SET=1 TAG=${1#--tag=} ;;
+      -*) die "unknown option '$1'" ;;
+      *) POS+=("$1") ;;
+    esac
+    shift
+  done
+}
+
+apply_meta() {
+  local provider=$1 name=$2
+  if ((LABEL_SET)); then
+    aa_meta_set "$provider" "$name" label "$LABEL" || die "cannot write $(aa_meta_file "$provider")"
+  fi
+  if ((TAG_SET)); then
+    aa_meta_set "$provider" "$name" tag "$TAG" || die "cannot write $(aa_meta_file "$provider")"
+  fi
+  return 0
+}
+
 cmd_add() {
-  local provider=${1:-} name=${2:-} home
+  local provider name home
+  parse_meta_args "$@"
+  provider=${POS[0]:-}
+  name=${POS[1]:-}
   need_provider "$provider"
-  [[ $name == default ]] && die "'default' is the normal home ($(aa_default_home "$provider")); it needs no add"
-  aa_valid_name "$name" || die "'$name' is not a valid account name (a-z, 0-9, '.', '_', '-'; at most 32)"
+  [[ $name == default ]] && die "'default' is the normal home; it needs no add (to label it: agent-account set $provider default --label <text>)"
+  aa_valid_name "$name" || die "'$name' is not a valid account id (a-z, 0-9, '.', '_', '-'; at most 32)"
   home=$(aa_home "$provider" "$name")
   if [[ -d $home ]]; then
-    echo "$provider account '$name' exists: $home (links refreshed)"
+    echo "$provider account '$name' exists: $home (its own files are kept; links refreshed)"
   else
     (umask 077 && mkdir -p "$home") || die "cannot create $home"
     echo "$provider account '$name' created: $home"
   fi
   aa_refresh "$provider" "$home"
+  apply_meta "$provider" "$name"
   login_hint "$provider" "$name" "$home"
+}
+
+cmd_set() {
+  local provider name
+  parse_meta_args "$@"
+  provider=${POS[0]:-}
+  name=${POS[1]:-}
+  need_provider "$provider"
+  need_account "$provider" "$name"
+  ((LABEL_SET || TAG_SET)) || die "nothing to set (use --label and/or --tag)"
+  apply_meta "$provider" "$name"
+  account_json "$provider" "$name" | jq -r --arg p "$provider" \
+    '"\($p) \(.id): label \(.label), tag \(.tag // "-")"'
+}
+
+# Read a Cursor API key from the terminal without echo and save it, mode 600.
+save_cursor_key() {
+  local home=$1 key="" tmp
+  { printf 'API key for this Cursor account (not shown): ' >/dev/tty &&
+    IFS= read -rs key </dev/tty && echo >/dev/tty; } 2>/dev/null ||
+    die "no terminal to read the key; write $home/api-key yourself (mode 600)"
+  [[ -n $key ]] || die "empty key: nothing saved"
+  tmp=$(mktemp "$home/.api-key.XXXXXX") || die "cannot write in $home"
+  chmod 600 "$tmp"
+  if ! { printf '%s\n' "$key" >"$tmp" && mv -f "$tmp" "$home/api-key"; }; then
+    rm -f "$tmp"
+    die "cannot write $home/api-key"
+  fi
+  echo "Saved the key in $home/api-key."
 }
 
 cmd_login() {
@@ -197,12 +338,17 @@ cmd_login() {
     export AGENT_ACCOUNT=""
   else
     home=$(aa_home "$provider" "$name")
+    if [[ $provider == cursor ]]; then
+      save_cursor_key "$home"
+      return
+    fi
     aa_refresh "$provider" "$home"
     export "$var=$home"
   fi
   case $provider in
     claude) exec claude auth login "$@" ;;
     codex) exec codex login "$@" ;;
+    cursor) exec cursor-agent login "$@" ;;
   esac
 }
 
@@ -240,25 +386,33 @@ cmd_remove() {
     [[ $answer == [yY]* ]] || die "nothing removed"
   fi
   rm -rf -- "$home" || die "cannot remove $home"
+  aa_meta_set "$provider" "$name" label "" && aa_meta_set "$provider" "$name" tag ""
   echo "Removed $home."
   if [[ $provider == claude && $(uname -s) == Darwin ]]; then
     item=$(keychain_item "$home")
     echo "Its login stays in the macOS Keychain as \"$item\". To delete it:"
     echo "  security delete-generic-password -s '$item'"
   fi
+  if [[ $provider == cursor ]]; then
+    echo "The API key file is deleted; the key itself stays valid until you revoke it in Cursor."
+  fi
 }
 
 cmd_env() {
-  local provider=${1:-} name=${2:-} var
+  local provider=${1:-} name=${2:-} var value=""
   need_provider "$provider"
   [[ -n $name ]] || name=$(aa_active "$provider")
-  need_account "$provider" "$name"
+  name=$(resolve_account "$provider" "$name") || exit 1
   var=$(aa_env_var "$provider")
-  if [[ $name == default ]]; then
-    echo "$var="
-  else
-    echo "$var=$(aa_home "$provider" "$name")"
+  if [[ $name != default ]]; then
+    value=$(aa_home "$provider" "$name")
   fi
+  # The Cursor key is never printed: env gives the file that holds it.
+  if [[ $provider == cursor ]]; then
+    var=CURSOR_API_KEY_FILE
+    [[ -n $value ]] && value=$value/api-key
+  fi
+  echo "$var=$value"
 }
 
 cmd=${1:-}
@@ -274,6 +428,7 @@ case $cmd in
   list | ls) cmd_list "$@" ;;
   use) cmd_use "$@" ;;
   add) cmd_add "$@" ;;
+  set) cmd_set "$@" ;;
   login) cmd_login "$@" ;;
   remove | rm) cmd_remove "$@" ;;
   env) cmd_env "$@" ;;

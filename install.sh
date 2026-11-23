@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # install.sh — symlink kube, logs, ports, monitor, vox, battery and agent-account
-# into ~/.local/bin, and gh-shim as "gh" and agent-shim as "claude" and "codex"
-# into ~/.local/share/terminal-tools/shims.
+# into ~/.local/bin, and gh-shim as "gh" and agent-shim as "claude", "codex",
+# "cursor-agent" and "agent" into ~/.local/share/terminal-tools/shims.
 # The shared lib/ is resolved relative to each script, so it stays in the repo.
 #
 #   ./install.sh              symlink into ~/.local/bin (default)
@@ -33,12 +33,12 @@ case ":$PATH:" in
   *) printf '\033[33mnote:\033[0m %s is not on your $PATH — add it to use the tools by name\n' "$BIN" ;;
 esac
 
-# The shims replace "gh", "claude" and "codex" on PATH, so they get their own
+# The shims replace "gh", "claude", "codex", "cursor-agent" and "agent" on PATH, so they get their own
 # directory: putting that directory first must not move the other tools ahead
 # of system commands.
 SHIMS=${SHIMS:-$HOME/.local/share/terminal-tools/shims}
 mkdir -p "$SHIMS"
-for pair in gh:gh-shim claude:agent-shim codex:agent-shim; do
+for pair in gh:gh-shim claude:agent-shim codex:agent-shim cursor-agent:agent-shim agent:agent-shim; do
   name=${pair%%:*}
   src="$REPO/${pair#*:}"
   if [[ -e $SHIMS/$name && ! -L $SHIMS/$name ]]; then

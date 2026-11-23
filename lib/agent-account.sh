@@ -1,24 +1,26 @@
 # lib/agent-account.sh — shared by agent-account and agent-shim (bash 3.2).
 #
 # Registry: $AGENT_ACCOUNTS_HOME (default $XDG_DATA_HOME/agent-accounts).
-#   <root>/<provider>/<name>/   the home of account <name>: CLAUDE_CONFIG_DIR
-#                               or CODEX_HOME. Its basename is the name.
-#   <root>/<provider>/active    one line, the active account. Missing, empty
-#                               or not a valid name = default.
+#   <root>/<provider>/<id>/     the home of account <id>: CLAUDE_CONFIG_DIR
+#                               or CODEX_HOME. Its basename is the id. For
+#                               cursor it holds only api-key (mode 600).
+#   <root>/<provider>/active    one line, the active account id. Missing,
+#                               empty or not a valid id = default.
+#   <root>/<provider>/accounts.json  {"<id>": {"label": "...", "tag": "..."}}
 # Account "default" is the provider's normal home and has no folder here.
 #
 # A home path is always built as <root>/<provider>/<name>, never resolved:
 # Claude Code names its Keychain item after the CLAUDE_CONFIG_DIR string, so a
 # different spelling of the same folder is a different login.
 
-AA_PROVIDERS="claude codex"
+AA_PROVIDERS="claude codex cursor"
 
 aa_root() {
   echo "${AGENT_ACCOUNTS_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/agent-accounts}"
 }
 
 aa_valid_provider() {
-  case ${1:-} in claude | codex) return 0 ;; esac
+  case ${1:-} in claude | codex | cursor) return 0 ;; esac
   return 1
 }
 
@@ -31,11 +33,22 @@ aa_valid_name() {
 }
 
 # The provider's normal home. The CLI ignores CLAUDE_CONFIG_DIR / CODEX_HOME
-# from its own environment: it often runs inside an agent session.
+# from its own environment: it often runs inside an agent session. Cursor's
+# config dir is not switched per account (see aa_env_var), so its own lookup
+# order applies.
 aa_default_home() {
   case $1 in
     claude) echo "$HOME/.claude" ;;
     codex) echo "$HOME/.codex" ;;
+    cursor)
+      if [[ -n ${CURSOR_CONFIG_DIR:-} ]]; then
+        echo "$CURSOR_CONFIG_DIR"
+      elif [[ -n ${XDG_CONFIG_HOME:-} ]]; then
+        echo "$XDG_CONFIG_HOME/cursor"
+      else
+        echo "$HOME/.cursor"
+      fi
+      ;;
   esac
 }
 
@@ -47,11 +60,47 @@ aa_home() {
   fi
 }
 
+# The variable the shim sets. On macOS cursor-agent keeps its login in
+# Keychain items with fixed names, not per config dir, so a Cursor account is
+# an API key (the file api-key in its home) passed as CURSOR_API_KEY.
 aa_env_var() {
   case $1 in
     claude) echo CLAUDE_CONFIG_DIR ;;
     codex) echo CODEX_HOME ;;
+    cursor) echo CURSOR_API_KEY ;;
   esac
+}
+
+aa_meta_file() {
+  echo "$(aa_root)/$1/accounts.json"
+}
+
+# The label and the tag of an account, empty when not set.
+aa_meta() { # provider id field
+  local file
+  file=$(aa_meta_file "$1")
+  [[ -r $file ]] || return 0
+  jq -r --arg id "$2" --arg f "$3" '.[$id][$f] // empty | strings' "$file" 2>/dev/null
+}
+
+# Set (or, with an empty value, clear) the label or the tag of an account.
+aa_meta_set() { # provider id field value
+  local file dir tmp
+  file=$(aa_meta_file "$1")
+  dir=${file%/*}
+  mkdir -p "$dir" || return 1
+  tmp=$(mktemp "$dir/.accounts.json.XXXXXX") || return 1
+  if { [[ -s $file ]] && cat "$file" || echo '{}'; } |
+    jq --arg id "$2" --arg f "$3" --arg v "$4" '
+      (if type == "object" then . else {} end)
+      | if $v == "" then (if .[$id] then .[$id] |= del(.[$f]) else . end)
+        else .[$id][$f] = $v end
+      | with_entries(select(.value != {}))' >"$tmp"; then
+    mv -f "$tmp" "$file"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # The name in the pointer file, or "default".
@@ -130,6 +179,7 @@ aa_claude_sync_mcp() {
 # Bring an account home up to date: links, and for Claude its .claude.json.
 aa_refresh() {
   local provider=$1 home=$2
+  [[ $provider == cursor ]] && return 0
   aa_link_entries "$provider" "$home"
   if [[ $provider == claude ]]; then
     if ! command -v jq >/dev/null 2>&1; then
