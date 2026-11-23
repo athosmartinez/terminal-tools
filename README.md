@@ -404,7 +404,9 @@ agent-account add <provider> <id> [--label <text>] [--tag <text>]
 agent-account set <provider> <id> [--label <text>] [--tag <text>]   # "" clears it
 agent-account login <provider> <id>     # log in to it (interactive)
 agent-account use <provider> <id|label> # new sessions use it; "default" goes back
+agent-account use <provider> <id|label> --restart   # also restart the open tab sessions on it
 agent-account env <provider> [<id>]     # CLAUDE_CONFIG_DIR=... / CODEX_HOME=... / CURSOR_API_KEY_FILE=...
+agent-account usage cursor [--json] [--max-age <s>] # the plan usage of each Cursor account
 agent-account remove <provider> <id> [--yes]
 ```
 
@@ -452,6 +454,54 @@ export PATH="$HOME/.local/share/terminal-tools/shims:$PATH"
 An app that starts agents in its own terminals gets its `PATH` from the
 login shell or from its own settings; check there with the same
 `command -v`.
+
+**Cursor usage (`usage cursor`).** `agent-account usage cursor --json` prints
+one object per Cursor account: `plan`, `used_percent`, `spent_usd`,
+`limit_usd`, `resets_at` (the end of the billing period), `window_minutes`
+(its length), `updated_at` and `error`. It asks Cursor's dashboard API (the
+`aiserver.v1.DashboardService` RPCs `GetCurrentPeriodUsage` and `GetPlanInfo`
+at `api2.cursor.sh`, which `cursor-agent` itself uses) with read calls only.
+
+- The `default` account uses the access token of the `cursor-agent` login: on
+  macOS the Keychain item `cursor-access-token` (account `cursor-user`), on
+  Linux `~/.config/cursor/auth.json`. When that token has expired, start
+  `cursor-agent` once; it refreshes the token.
+- An account with an API key first exchanges the key for an access token
+  (`/auth/exchange_user_api_key`), as `cursor-agent` does with
+  `CURSOR_API_KEY`.
+- A token or key never goes on a command line or to the output: `curl` reads
+  it from its stdin.
+- Each reading is cached in `~/.cache/agent-usage/cursor/<id>.json`; a
+  reading younger than `--max-age` seconds (default 300) makes no call.
+- An account that cannot be read (no login, an expired token, a network
+  error, an answer of an unknown shape) gets `error` and null numbers; the
+  command still exits 0.
+
+**Restart on the new account (`use --restart`).** `agent-account use claude
+work --restart` switches the account, then restarts every open Claude Code
+**tab** session in a Herdr (`hc`) terminal so that it continues the same
+conversation on `work`. It prints `<n> claude sessions will restart on work
+when idle` and returns; the restarts run in a detached process that logs to
+`~/.local/state/agent-account/restart.log`.
+
+- A tab is a live terminal of this machine with no parent and no `papel`
+  label. A worker started with `hc run` has a parent and is never restarted.
+- A session restarts only when its turn has ended: an idle session at once, a
+  working or blocked one after `hc wait`. It is never interrupted.
+- The steps: read the session id, send `/exit`, check that the shell is back,
+  then send the same command line with `--resume <id>` (Codex: `codex resume
+  ... <id>`). The options (model, effort, agent, permission mode, added
+  directories, config) stay; the initial prompt and an old `--resume` /
+  `--continue` go. When the shell is in another folder, a `cd` comes first.
+  The shim then starts the agent on the active account.
+- Claude Code: the session id comes from `sessions/<pid>.json` in the account
+  home. Every account links the same `projects` folder, so the conversation is
+  there for the new account.
+- Codex: the session id comes from the rollout file that the `codex` process
+  holds open (`lsof`). With Codex's background server (no `--no-daemon`) the
+  server holds that file, not the session's process: such a session is not
+  restarted, and the log says so.
+- Cursor sessions are not restarted.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops
