@@ -30,7 +30,7 @@ repo.
 | **`vox`** | No TUI: keeps the last 15 [Voxtype](https://github.com/peteonrails/voxtype) dictations (Voxtype keeps none) through its post-process hook, and lists or copies them in the terminal. Ships **VoxBar** (macOS), one menu bar item for Voxtype: the daemon state as the icon, restart and log, and the recent dictations with copy on click. |
 | **`battery`** | No TUI (macOS): the battery of every connected Bluetooth device that has the standard GATT Battery Service, read from the device itself — so it also works for BLE keyboards that macOS shows no battery for. Ships **BatteryBar**, a menu bar item with short labels stacked in two lines (`KB 100%` over `MS 85%`) and a warning mark when one runs low. |
 | **`gh-shim`** | No TUI: a wrapper installed as `gh`. With several GitHub accounts logged in to `gh`, it runs each command as the account that git uses for the current repository, instead of the one active account. |
-| **`agent-account`** | No TUI: keep several logged-in [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Codex](https://github.com/openai/codex) accounts, and choose the one the next session uses (for example when one account runs low on its usage limit). A shim installed as `claude` and `codex` reads the choice at every start; a running session keeps its account. |
+| **`agent-account`** | No TUI: keep several logged-in [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex) and Cursor CLI (`cursor-agent`) accounts, each with an optional label and tag, and choose the one the next session uses (for example when one account runs low on its usage limit). A shim installed as `claude`, `codex`, `cursor-agent` and `agent` reads the choice at every start; a running session keeps its account. |
 
 Every mutating action **prints the real command it runs** (`$ kubectl rollout
 restart …`, `$ kill -TERM …`) before executing — so the TUI doubles as a way to
@@ -84,7 +84,7 @@ NAMESPACE           NAME                        KIND    READY   IMAGE           
   the menu bar app (macOS)
 - `battery`: macOS with `swiftc`, and the Bluetooth permission (macOS asks
   once: for your terminal app, and for BatteryBar)
-- `agent-account`: `bash` and `jq`; Claude Code and/or Codex
+- `agent-account`: `bash` and `jq`; Claude Code, Codex and/or the Cursor CLI
 - Optional, for the "copy" and "open URL" keys: a clipboard tool (`pbcopy`,
   `wl-copy`, `xclip`, `xsel` or WSL's `clip.exe`) and a URL opener (`open`,
   `xdg-open`, `wslview` or `explorer.exe`). Without them the action still tells
@@ -99,7 +99,7 @@ cd terminal-tools
 ```
 
 `install.sh` symlinks the seven entry points into `~/.local/bin` (make sure it's
-on your `$PATH`), and the shims (`gh`, `claude`, `codex`) into
+on your `$PATH`), and the shims (`gh`, `claude`, `codex`, `cursor-agent`, `agent`) into
 `~/.local/share/terminal-tools/shims`. Because they're symlinks, editing files in the repo updates the
 installed tools instantly. The shared `lib/` is resolved relative to each script,
 so it travels with the repo.
@@ -353,27 +353,33 @@ prepend the shim directory again after it). Check the choice with
 `GH_SHIM_DEBUG=1 gh api user --jq .login`. A tool that calls the real `gh` by
 its full path skips the shim.
 
-**Several Claude Code and Codex accounts (`agent-account`).** Each account
-has its own home folder, which becomes the `CLAUDE_CONFIG_DIR` (Claude Code)
-or `CODEX_HOME` (Codex) of its sessions. The home links every entry of
-`~/.claude` or `~/.codex` — settings, skills, hooks, plugins, sessions — so
-only the login differs. The account `default` is the normal `~/.claude` (with
-`~/.claude.json`) or `~/.codex`. You choose the active account by hand; the
-next session uses it, and a running session keeps its own.
+**Several Claude Code, Codex and Cursor accounts (`agent-account`).** Each
+account other than `default` has its own home folder. For Claude Code and
+Codex it becomes the `CLAUDE_CONFIG_DIR` or `CODEX_HOME` of its sessions, and
+it links every entry of `~/.claude` or `~/.codex` — settings, skills, hooks,
+plugins, sessions — so only the login differs. For Cursor (`cursor-agent`) it
+holds only an API key. The account `default` is the normal setup: `~/.claude`
+(with `~/.claude.json`), `~/.codex`, or Cursor's own login. You choose the
+active account by hand; the next session uses it, and a running session keeps
+its own.
 
 The registry lives in `$AGENT_ACCOUNTS_HOME` (default
 `~/.local/share/agent-accounts`), never in a repo:
 
 ```text
 ~/.local/share/agent-accounts/
-  claude/active        one line: the active account (missing = default)
-  claude/work/         the home of account "work" = its CLAUDE_CONFIG_DIR
-  codex/active
-  codex/work/          = its CODEX_HOME
+  claude/active         one line: the id of the active account (missing = default)
+  claude/accounts.json  {"<id>": {"label": "...", "tag": "..."}}, optional
+  claude/work/          the home of account "work" = its CLAUDE_CONFIG_DIR
+  codex/work/           = its CODEX_HOME
+  cursor/work/api-key   the API key of Cursor account "work" (mode 600)
 ```
 
-- An account name: lowercase letters, digits, `.`, `_`, `-`, at most 32
-  characters. The folder name is the account name.
+- An account **id**: lowercase letters, digits, `.`, `_`, `-`, at most 32
+  characters. The folder name is the id.
+- A **label** (what people read, for example the short part of the email)
+  and a **tag** (free text, for example `work` or `personal`) are optional.
+  Without a label, the id is shown.
 - Claude: the home links every entry of `~/.claude` except `.claude.json`
   and `.credentials.json`. Its own `.claude.json` starts as a copy of
   `~/.claude.json` without the account identity (`oauthAccount`, `userID`).
@@ -384,41 +390,68 @@ The registry lives in `$AGENT_ACCOUNTS_HOME` (default
 - Codex: the home links every entry of `~/.codex` except `auth.json`,
   `auth.json.lock` and `auth.lock`. The sessions are shared, so `codex resume`
   works in every account.
+- Cursor: on macOS `cursor-agent` keeps its login in Keychain items with fixed
+  names, so a second config folder does not give a second login. A Cursor
+  account other than `default` is an API key, which the shim passes as
+  `CURSOR_API_KEY`. The config stays the normal one.
+- `add` on a home that already exists keeps its files and its `.claude.json`;
+  it only adds the missing links.
 
 ```sh
-agent-account list                  # the accounts, the active one marked with *
-agent-account list --json           # the same as JSON: email, logged_in, account id, plan
-agent-account add <provider> <name> # create the home; prints the login step
-agent-account login <provider> <name>   # log in to it (interactive)
-agent-account use <provider> <name>     # new sessions use it; "default" goes back
-agent-account env <provider> [<name>]   # CLAUDE_CONFIG_DIR=... / CODEX_HOME=...
-agent-account remove <provider> <name> [--yes]
+agent-account list                      # the accounts: label, tag, email; * = active
+agent-account list --json               # as JSON: id, label, tag, email, logged_in, account id, plan
+agent-account add <provider> <id> [--label <text>] [--tag <text>]
+agent-account set <provider> <id> [--label <text>] [--tag <text>]   # "" clears it
+agent-account login <provider> <id>     # log in to it (interactive)
+agent-account use <provider> <id|label> # new sessions use it; "default" goes back
+agent-account env <provider> [<id>]     # CLAUDE_CONFIG_DIR=... / CODEX_HOME=... / CURSOR_API_KEY_FILE=...
+agent-account remove <provider> <id> [--yes]
 ```
 
-`<provider>` is `claude` or `codex`. To add an account:
+`<provider>` is `claude`, `codex` or `cursor`. To add an account:
 
-1. Create its home: `agent-account add claude work`.
+1. Create its home: `agent-account add claude work --label alice --tag work`.
 2. Log in, in your own terminal: `agent-account login claude work` (the same
    as `CLAUDE_CONFIG_DIR=<home> claude auth login`). For Codex,
    `agent-account login codex work` runs `CODEX_HOME=<home> codex login`; you
-   can also copy an `auth.json` you already have into the home.
-3. Use it: `agent-account use claude work`. Check with `agent-account list`.
+   can also copy an `auth.json` you already have into the home. For Cursor,
+   `agent-account login cursor work` reads the API key without showing it and
+   saves it in the home; it never goes to the shell history or the screen.
+3. Use it: `agent-account use claude work` (or the label: `use claude alice`).
+   Check with `agent-account list`.
 
-The shim (`agent-shim`, linked as `claude` and `codex` into
-`~/.local/share/terminal-tools/shims`) picks the account for each start:
+The shim (`agent-shim`, linked as `claude`, `codex`, `cursor-agent` and
+`agent` into `~/.local/share/terminal-tools/shims`) picks the account for each
+start:
 
-1. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` is already set, or `AGENT_ACCOUNT=` is
-   set and empty: it runs the real binary unchanged.
-2. `AGENT_ACCOUNT=<name>`: that account, for this run only.
+1. `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `CURSOR_API_KEY` is already set, or
+   `AGENT_ACCOUNT=` is set and empty: it runs the real binary unchanged.
+2. `AGENT_ACCOUNT=<id>`: that account, for this run only.
 3. Otherwise the active account. `default` runs the real binary unchanged,
    so the shim costs nothing while you use only one account.
 
-An account without a home stops with an error: the shim never falls back to
-another account. Like `gh-shim`, the shim directory must come **before** the
-real `claude` and `codex` on `PATH` in every shell and app that starts them;
-`AGENT_ACCOUNT_REAL_CLAUDE` / `AGENT_ACCOUNT_REAL_CODEX` set the real binary.
+An account without a home (or a Cursor account without a key) stops with an
+error: the shim never falls back to another account.
+`AGENT_ACCOUNT_REAL_CLAUDE` / `_CODEX` / `_CURSOR` set the real binary.
 `remove` refuses `default` and the active account, and on macOS it prints the
 Keychain item that it leaves.
+
+The shim directory must come **before** the real binaries on `PATH`, in every
+shell and every app that starts an agent. Check it with
+`command -v claude codex cursor-agent agent`: each line must be in
+`~/.local/share/terminal-tools/shims`. The Cursor installer puts
+`cursor-agent` and `agent` in `~/.local/bin` and updates them there, so do not
+replace them. If `~/.local/bin` comes first, put the shim directory in front
+of it again, as the last `PATH` line of your shell profile (`~/.zprofile`, or
+`~/.zshrc` when that file also changes `PATH`):
+
+```sh
+export PATH="$HOME/.local/share/terminal-tools/shims:$PATH"
+```
+
+An app that starts agents in its own terminals gets its `PATH` from the
+login shell or from its own settings; check there with the same
+`command -v`.
 
 In `logs`, Jobs show a state instead of ready/desired: `running`, `retry N` (running again
 after N failed attempts), `done`, `failed` or `pending`. Following a Job stops

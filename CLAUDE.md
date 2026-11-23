@@ -6,8 +6,8 @@ app, with a separate Linux/Hyprland version in bash, `vox`, a Voxtype
 companion: transcription history plus a menu bar app with the daemon state,
 `battery`, a macOS Swift CLI and menu bar app with the battery of the
 connected Bluetooth devices, and `agent-account`, a bash CLI plus a shim
-installed as `claude` and `codex` that switches between several logged-in
-accounts). Conventions and gotchas live here; user-facing
+installed as `claude`, `codex`, `cursor-agent` and `agent` that switches
+between several logged-in accounts). Conventions and gotchas live here; user-facing
 docs live in `README.md`.
 
 ## Workflow (important)
@@ -55,10 +55,12 @@ other people and holds nothing private:
   stay bash 3.2 compatible (macOS `/bin/bash`). Test:
   `bash tests/gh-shim.test.sh` (fake `gh`, temp git repos, no network).
 - `agent-account` + `agent-shim` — bash 3.2, shared code in
-  `lib/agent-account.sh`. `agent-shim` is linked as `claude` and `codex` in
-  the shims dir and picks the provider from `basename "$0"`. Registry:
-  `${AGENT_ACCOUNTS_HOME:-$XDG_DATA_HOME/agent-accounts}/<provider>/<name>/`
-  (= `CLAUDE_CONFIG_DIR` / `CODEX_HOME`) and `<provider>/active`. Gotchas:
+  `lib/agent-account.sh`. `agent-shim` is linked as `claude`, `codex`,
+  `cursor-agent` and `agent` in the shims dir; `basename "$0"` picks the
+  provider and the real binary (the next one on PATH with that name). Registry:
+  `${AGENT_ACCOUNTS_HOME:-$XDG_DATA_HOME/agent-accounts}/<provider>/<id>/`
+  (= `CLAUDE_CONFIG_DIR` / `CODEX_HOME`; for cursor only `api-key`),
+  `<provider>/active` and `<provider>/accounts.json` (label, tag). Gotchas:
   - Build a home path only as `<root>/<provider>/<name>`, never resolved:
     Claude Code names the macOS Keychain item of a login
     `Claude Code-credentials-<first 8 hex of sha256 of the dir string>`.
@@ -70,7 +72,12 @@ other people and holds nothing private:
   - The CLI ignores `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from its own env: it
     often runs inside an agent session.
   - The Codex `id_token` is decoded inside jq; only email, account id and
-    plan leave it. Never print `auth.json`.
+    plan leave it. Never print `auth.json` or a Cursor `api-key`: `env cursor`
+    prints the key file, and the shim sets `CURSOR_API_KEY` only in the exec.
+  - Cursor on macOS keeps its login in Keychain items with fixed names, not
+    per config dir, so a Cursor account is an API key, not a config dir.
+  - `list --json` keeps `name` (= `id`) for older readers; `label` falls back
+    to the id and is never null. `use` takes an id or a unique label.
   Test: `bash tests/agent-account.test.sh` (fake homes, fake binaries).
 - `kube` — a keyboard-first Kubernetes cockpit (single persistent fzf).
 - `logs` — follow workload logs across namespaces (one color per pod).
