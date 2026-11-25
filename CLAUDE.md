@@ -69,13 +69,19 @@ other people and holds nothing private:
     the account home is never overwritten.
   - The account's `.claude.json` is rewritten (tmp + `mv`, mode 600) only
     when a shared MCP server is missing or different: a running session
-    writes the same file. The shared servers are merged in (`+`), never
-    replace the account's `mcpServers`: a server that only the account has
-    stays.
+    writes the same file. The merge reads a copy and renames only when
+    `cmp` finds the file still equal to it (else up to 3 tries, then exit
+    1). The shared servers are merged in (`+`), never replace the account's
+    `mcpServers`: a server that only the account has stays.
+  - `aa_refresh` holds a lock folder (`<home>/.agent-account.lock`, with the
+    owner pid; a dead owner's lock is taken over): Orca starts several agents
+    of one account at once. Exit 1 = home not prepared (the shim stops),
+    2 = MCP servers not merged (the shim warns and starts). Links use
+    `ln -sn`: `ln -s` onto a link to a folder writes into the shared folder.
   - `settings.json` and `plugins` (`AA_CLAUDE_SHARED`) must be links:
     Claude Code writes its own copy into a new home before the links exist,
     and `aa_link_entries` skips an existing entry. `aa_claude_link_shared`
-    moves what is there to `<name>.bak.<date-time>` (never deletes it) and
+    moves what is there to `<name>.bak.<date-time>.<pid>` (never deletes it) and
     links. With the right link it does nothing, so a start makes no backup.
   - `check` only reads; `sync` runs `aa_refresh` on every home, for the
     sessions that skip the shim (a preset `CLAUDE_CONFIG_DIR`).

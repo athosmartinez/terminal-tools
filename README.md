@@ -385,16 +385,19 @@ The registry lives in `$AGENT_ACCOUNTS_HOME` (default
   `~/.claude.json` without the account identity (`oauthAccount`, `userID`).
   At every start the shim links entries that appeared in `~/.claude`, and
   merges the user-scope MCP servers (`mcpServers` of `~/.claude.json`) into
-  it: a missing or different server takes the shared definition, and a server
-  that only the account has stays (`check` lists it).
+  it: a missing or different server takes the shared definition (the
+  account's own definition of that name is replaced, with no backup), and a
+  server that only the account has stays (`check` lists it). A write by a
+  running session of the account is never lost: the merge starts again.
   On macOS, Claude Code keeps the login in the Keychain, in an item named after
   the home path: if you move a home, log in again.
 - Claude: `settings.json` and `plugins` are always links to `~/.claude`.
   Claude Code can write its own copy into a new home before the links exist
   (at the first login, or with `/config`); that account then runs without your
   hooks, env and plugins. The shim, `add`, `use` and `sync` move such a copy
-  to `<name>.bak.<date-time>` in the home and put the link in its place. They
-  never delete it.
+  to `<name>.bak.<date-time>.<pid>` in the home and put the link in its
+  place. They never delete it. Several starts of one account at the same time
+  take turns (a lock folder `.agent-account.lock` in the home).
 - Codex: the home links every entry of `~/.codex` except `auth.json`,
   `auth.json.lock` and `auth.lock`. The sessions are shared, so `codex resume`
   works in every account.
@@ -420,8 +423,12 @@ agent-account check [claude [<id>]]     # what each Claude account lacks from ~/
 
 A session that sets `CLAUDE_CONFIG_DIR` itself skips the shim, so its home
 is not updated at the start. Run `agent-account check claude` to see the
-drift of each account (`DRIFT` lines need a sync, `info` lines do not), and
-`agent-account sync claude` to fix it.
+drift of each account (`DRIFT` lines need a sync, `info` lines do not, an
+`ERROR` line is a `.claude.json` to repair by hand), and
+`agent-account sync claude` to fix it. `check` exits 0 when all is in sync,
+1 for drift or an error line, 2 for a bad call. `sync` exits 1 when a home
+could not be prepared or its MCP servers could not be merged; the shim still
+starts the agent then, and says why.
 
 `<provider>` is `claude`, `codex` or `cursor`. To add an account:
 
