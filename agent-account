@@ -7,7 +7,9 @@
 # Each account other than "default" has its own home folder. For Claude Code
 # and Codex it is the CLAUDE_CONFIG_DIR / CODEX_HOME of its sessions, and it
 # links every entry of ~/.claude or ~/.codex (settings, skills, hooks,
-# sessions...) except the login, so only the login differs. For Cursor it
+# sessions...) except the login, so only the login differs. A Claude home
+# always links settings.json and plugins, and gets the user-scope MCP servers
+# of ~/.claude.json. For Cursor it
 # holds only an API key. The shim installed as "claude", "codex",
 # "cursor-agent" and "agent" (agent-shim) reads the active account at every
 # start. Each account can also have a label (shown to people) and a tag.
@@ -39,6 +41,13 @@ Usage: agent-account <command>
   remove <provider> <id> [--yes]      delete the home of <id>
   env <provider> [<id>]               CLAUDE_CONFIG_DIR=... / CODEX_HOME=... /
                                       CURSOR_API_KEY_FILE=... for scripts
+  sync [<provider> [<id|label>]]      update the homes now, as the shim does at a
+                                      start: links, settings.json and plugins
+                                      (the account's own goes to a backup), MCP
+                                      servers. No provider = claude and codex
+  check [claude [<id|label>]]         what each Claude account lacks from
+                                      ~/.claude and ~/.claude.json; exit 1 when
+                                      sync has something to fix
 
 Providers: claude, codex, cursor. Account "default" is the normal home
 (~/.claude, ~/.codex, Cursor's own login).
@@ -425,6 +434,135 @@ cmd_env() {
   echo "$var=$value"
 }
 
+# The account ids a command acts on: the one given (an id or a label), or
+# every account but default.
+target_accounts() {
+  local provider=$1 arg=${2:-} name
+  if [[ -n $arg ]]; then
+    resolve_account "$provider" "$arg" || return 1
+    return 0
+  fi
+  for name in $(account_names "$provider"); do
+    [[ $name == default ]] || echo "$name"
+  done
+}
+
+# Bring account homes up to date now, as the shim does at a start: the links,
+# settings.json and plugins, and the MCP servers. It is for the sessions that
+# skip the shim (a caller that sets CLAUDE_CONFIG_DIR itself).
+cmd_sync() {
+  local provider=${1:-} arg=${2:-} providers p names name home rc=0
+  if [[ -n $provider ]]; then
+    need_provider "$provider"
+    providers=$provider
+  else
+    providers="claude codex"
+  fi
+  for p in $providers; do
+    if [[ $p == cursor ]]; then
+      echo "cursor: nothing to sync (a Cursor account is only an API key)"
+      continue
+    fi
+    names=$(target_accounts "$p" "$arg") || exit 1
+    for name in $names; do
+      if [[ $name == default ]]; then
+        echo "$p default: the shared home itself, nothing to sync"
+        continue
+      fi
+      home=$(aa_home "$p" "$name")
+      if aa_refresh "$p" "$home"; then
+        echo "$p $name: in sync ($home)"
+      else
+        echo "$p $name: could not prepare $home" >&2
+        rc=1
+      fi
+    done
+  done
+  return $rc
+}
+
+# Join the lines of stdin with ", ".
+join_lines() { paste -sd, - | sed 's/,/, /g'; }
+
+# Report, for each Claude account, what differs from ~/.claude and
+# ~/.claude.json. Exit 1 when sync has something to fix. Reads only: it never
+# changes a home.
+cmd_check() {
+  local provider=${1:-claude} arg=${2:-} shared want names name home dst target
+  local entry entry_name missing own drift=0 file have extra
+  need_provider "$provider"
+  [[ $provider == claude ]] || die "check covers claude only (codex and cursor have no shared settings to compare)"
+  shared=$(aa_default_home claude)
+  want=$(aa_claude_shared_mcp)
+  names=$(target_accounts claude "$arg") || exit 1
+  [[ -n $names ]] || { echo "claude: no account other than default"; return 0; }
+  for name in $names; do
+    if [[ $name == default ]]; then
+      echo "claude default: the shared home itself ($shared), nothing to compare"
+      continue
+    fi
+    home=$(aa_home claude "$name")
+    echo "claude $name ($home)"
+    for entry_name in $AA_CLAUDE_SHARED; do
+      target="$shared/$entry_name"
+      dst="$home/$entry_name"
+      [[ -e $target || -L $target ]] || continue
+      if [[ -L $dst && $(readlink "$dst") == "$target" ]]; then
+        echo "  ok     $entry_name links $target"
+        continue
+      fi
+      drift=1
+      if [[ -L $dst ]]; then
+        echo "  DRIFT  $entry_name links $(readlink "$dst"), not $target"
+      elif [[ -d $dst ]]; then
+        echo "  DRIFT  $entry_name is the account's own folder, not a link to $target"
+      elif [[ -e $dst ]]; then
+        echo "  DRIFT  $entry_name is the account's own file, not a link to $target"
+      else
+        echo "  DRIFT  $entry_name is missing"
+      fi
+    done
+    missing="" own=""
+    for entry in "$shared"/* "$shared"/.[!.]* "$shared"/..?*; do
+      [[ -e $entry || -L $entry ]] || continue
+      entry_name=${entry##*/}
+      aa_excluded claude "$entry_name" && continue
+      case " $AA_CLAUDE_SHARED " in *" $entry_name "*) continue ;; esac
+      if [[ ! -e $home/$entry_name && ! -L $home/$entry_name ]]; then
+        missing="$missing$entry_name"$'\n'
+      elif [[ ! -L $home/$entry_name ]]; then
+        own="$own$entry_name"$'\n'
+      fi
+    done
+    if [[ -n $missing ]]; then
+      drift=1
+      echo "  DRIFT  entries of $shared not linked yet: $(printf '%s' "$missing" | join_lines)"
+    fi
+    [[ -n $own ]] && echo "  info   the account's own entries, not shared: $(printf '%s' "$own" | join_lines)"
+    file="$home/.claude.json"
+    if ! have=$(jq -c '.mcpServers // {} | if type == "object" then . else {} end' "$file" 2>/dev/null); then
+      drift=1
+      echo "  DRIFT  $file is missing or not valid JSON"
+      continue
+    fi
+    missing=$(jq -rn --argjson m "$want" --argjson h "$have" \
+      '[$m | to_entries[] | select($h[.key] != .value) | .key] | join(", ")')
+    extra=$(jq -rn --argjson m "$want" --argjson h "$have" '[$h | keys[] | select($m[.] == null)] | join(", ")')
+    if [[ -n $missing ]]; then
+      drift=1
+      echo "  DRIFT  MCP servers of ~/.claude.json missing or different: $missing"
+    else
+      echo "  ok     MCP servers of ~/.claude.json: $(jq -rn --argjson m "$want" '$m | length')"
+    fi
+    [[ -n $extra ]] && echo "  info   MCP servers only in this account (sync keeps them): $extra"
+  done
+  if ((drift)); then
+    echo "Fix with: agent-account sync claude${arg:+ $arg}"
+    return 1
+  fi
+  return 0
+}
+
 cmd=${1:-}
 [[ $# -gt 0 ]] && shift
 case $cmd in
@@ -442,5 +580,7 @@ case $cmd in
   login) cmd_login "$@" ;;
   remove | rm) cmd_remove "$@" ;;
   env) cmd_env "$@" ;;
+  sync) cmd_sync "$@" ;;
+  check) cmd_check "$@" ;;
   *) usage >&2; die "unknown command '$cmd'" ;;
 esac

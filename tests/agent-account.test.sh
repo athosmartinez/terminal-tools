@@ -314,6 +314,49 @@ check_eq "use: links settings.json" "$HOME/.claude/settings.json" "$(readlink "$
 check "use: says where the backup is" "settings.json.bak." "$out"
 rm -f "$H"/settings.json.bak.*
 
+# --- check and sync ---------------------------------------------------------------
+
+out=$("$AA" check claude work)
+check_eq "check: a home in sync exits 0" 0 $?
+check "check: names the right settings link" "ok     settings.json links $HOME/.claude/settings.json" "$out"
+check "check: lists the account's own MCP server as info" \
+  "MCP servers only in this account (sync keeps them): mine" "$out"
+
+rm "$H/settings.json" "$H/new-entry" && echo '{"theme":"auto"}' >"$H/settings.json"
+mkdir "$HOME/.claude/own-dir" "$H/own-dir"
+jq '.mcpServers.three = {"command": "three"}' "$HOME/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$HOME/.claude.json"
+before="$(inode "$H/settings.json") $(inode "$H/.claude.json")"
+out=$("$AA" check claude work)
+check_eq "check: drift exits 1" 1 $?
+check "check: a plain settings.json is drift" "DRIFT  settings.json is the account's own file" "$out"
+check "check: a shared entry not linked yet is drift" "not linked yet: new-entry" "$out"
+check "check: a missing shared MCP server is drift" "missing or different: three" "$out"
+check "check: an own entry is info" "own entries, not shared: own-dir" "$out"
+check "check: says how to fix it" "Fix with: agent-account sync claude work" "$out"
+check_eq "check changes nothing" "$before" "$(inode "$H/settings.json") $(inode "$H/.claude.json")"
+check_true "check makes no backup" test -z "$(ls -d "$H"/*.bak.* 2>/dev/null)"
+
+touch "$HOME/.codex/newer-entry"
+out=$("$AA" sync 2>&1)
+check_eq "sync with no provider exits 0" 0 $?
+check "sync: reports each account" "claude work: in sync ($H)" "$out"
+check "sync: reports the codex accounts too" "codex work: in sync ($C)" "$out"
+check_eq "sync: links settings.json" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check_eq "sync: links a new codex entry" "$HOME/.codex/newer-entry" "$(readlink "$C/newer-entry")"
+check_eq "sync: adds the shared MCP server, keeps the own one" '["mine","one","three","two"]' \
+  "$(jq -c '.mcpServers | keys' "$H/.claude.json")"
+"$AA" check claude >/dev/null
+check_eq "check after sync exits 0" 0 $?
+rm -rf "$H"/*.bak.* "$H/own-dir" "$HOME/.claude/own-dir"
+check "sync cursor has nothing to do" "nothing to sync" "$("$AA" sync cursor)"
+check "sync of default does nothing" "nothing to sync" "$("$AA" sync claude default)"
+"$AA" sync claude ghost >/dev/null 2>&1
+check_eq "sync of an unknown account exits 1" 1 $?
+"$AA" check codex >/dev/null 2>&1
+check_eq "check covers claude only" 1 $?
+"$AA" check claude ghost >/dev/null 2>&1
+check_eq "check of an unknown account exits 1" 1 $?
+
 # --- labels and tags --------------------------------------------------------------
 
 "$AA" add claude admin --label adm --tag work >/dev/null
