@@ -242,7 +242,7 @@ touch "$HOME/.claude/new-entry" "$HOME/.claude/own.json" "$HOME/.codex/new-entry
 echo '{"mine":true}' >"$H/own.json"
 jq '.mcpServers.two = {"command": "two"} | .oauthAccount.emailAddress = "z@example.com"' \
   "$HOME/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$HOME/.claude.json"
-claude >/dev/null
+claude >/dev/null 2>&1
 codex >/dev/null
 check_eq "launch: a new claude entry is linked" "$HOME/.claude/new-entry" "$(readlink "$H/new-entry")"
 check_eq "launch: a new codex entry is linked" "$HOME/.codex/new-entry" "$(readlink "$C/new-entry")"
@@ -252,6 +252,26 @@ check_eq "launch: mcpServers reaches the account" '{"one":{"command":"one"},"two
 check_eq "launch: oauthAccount is not copied" b@example.com "$(jq -r .oauthAccount.emailAddress "$H/.claude.json")"
 check_eq "launch: .claude.json keeps mode 600" 600 "$(mode "$H/.claude.json")"
 check_true "launch: no .claude.json temp file is left" test -z "$(ls -A "$H" | grep '^\.claude\.json\.')"
+
+# The account's own MCP server stays; a shared server with another
+# definition in the account takes the shared one; nothing to add = no write.
+jq '.mcpServers.mine = {"command": "mine"} | .mcpServers.two = {"command": "old"}' \
+  "$H/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$H/.claude.json"
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: the account's own MCP server is kept, the shared definition wins" \
+  '{"mine":{"command":"mine"},"one":{"command":"one"},"two":{"command":"two"}}' \
+  "$(jq -cS .mcpServers "$H/.claude.json")"
+check "launch: the shim names the MCP servers it changed" "MCP servers added or updated: two" "$out"
+before=$(inode "$H/.claude.json")
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: nothing to add leaves .claude.json alone" "$before" "$(inode "$H/.claude.json")"
+check_eq "launch: nothing to add prints nothing" "" "$out"
+jq 'del(.mcpServers)' "$HOME/.claude.json" >"$WORK/t" && cp "$HOME/.claude.json" "$WORK/shared.json" &&
+  cat "$WORK/t" >"$HOME/.claude.json"
+claude >/dev/null 2>&1
+check_eq "launch: no mcpServers in ~/.claude.json removes nothing" '["mine","one","two"]' \
+  "$(jq -c '.mcpServers | keys' "$H/.claude.json")"
+cat "$WORK/shared.json" >"$HOME/.claude.json"
 
 # --- labels and tags --------------------------------------------------------------
 

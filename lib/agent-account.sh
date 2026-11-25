@@ -159,20 +159,36 @@ aa_claude_seed() {
   mv -f "$tmp" "$dst"
 }
 
-# Copy the top-level mcpServers of ~/.claude.json (the user-scope MCP servers)
-# into the account's .claude.json. A running session of the account also
-# writes that file, so it is rewritten only when the value differs.
+aa_say() { echo "agent-account: $*" >&2; }
+
+# The user-scope MCP servers of ~/.claude.json (its top-level mcpServers), as
+# a JSON object; {} when there are none.
+aa_claude_shared_mcp() {
+  [[ -r $HOME/.claude.json ]] || { echo '{}'; return 0; }
+  jq -c '.mcpServers | if type == "object" then . else {} end' "$HOME/.claude.json" 2>/dev/null ||
+    echo '{}'
+}
+
+# Merge the user-scope MCP servers of ~/.claude.json into the account's
+# .claude.json: a server of ~/.claude.json is added, or replaced when its
+# definition differs; a server that only the account has is kept (a server
+# removed from ~/.claude.json stays in the account: `check` lists it). A
+# running session of the account also writes that file, so it is rewritten
+# only when a server is missing or different.
 aa_claude_sync_mcp() {
-  local dst="$1/.claude.json" src="$HOME/.claude.json" want have tmp
-  [[ -r $src && -r $dst ]] || return 0
-  want=$(jq -cS '.mcpServers' "$src" 2>/dev/null) || return 0
-  have=$(jq -cS '.mcpServers' "$dst" 2>/dev/null) || return 0
-  [[ $want == "$have" ]] && return 0
+  local dst="$1/.claude.json" want names tmp
+  [[ -r $dst ]] || return 0
+  want=$(aa_claude_shared_mcp)
+  [[ $want == "{}" ]] && return 0
+  names=$(jq -r --argjson m "$want" '(.mcpServers // {}) as $h
+    | [$m | to_entries[] | select($h[.key] != .value) | .key] | join(", ")' "$dst" 2>/dev/null) ||
+    return 0
+  [[ -n $names ]] || return 0
   tmp=$(mktemp "$1/.claude.json.XXXXXX") || return 0
   chmod 600 "$tmp"
-  if jq --argjson m "$want" 'if $m == null then del(.mcpServers) else .mcpServers = $m end' \
-    "$dst" >"$tmp"; then
+  if jq --argjson m "$want" '.mcpServers = ((.mcpServers // {}) + $m)' "$dst" >"$tmp" 2>/dev/null; then
     mv -f "$tmp" "$dst"
+    aa_say "$dst: MCP servers added or updated: $names"
   else
     rm -f "$tmp"
   fi
