@@ -122,7 +122,9 @@ if [[ $provider == cursor ]]; then
   run_real
 fi
 
-if ! aa_refresh "$provider" "$home"; then
+# Exit 2 = the MCP servers are not synced (it printed why): start anyway.
+aa_refresh "$provider" "$home"
+if [[ $? -eq 1 ]]; then
   echo "agent-shim: could not prepare the $provider account home $home" >&2
   exit 1
 fi

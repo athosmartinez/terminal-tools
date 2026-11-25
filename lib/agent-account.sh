@@ -125,6 +125,15 @@ aa_excluded() {
 # $HOME/.<provider>/<entry> (not to that entry's own target, so a change of
 # the shared entry reaches every account). An entry that already exists in
 # the account home is left alone.
+#
+# Several starts of one account can run at the same time. `ln -sn` never
+# follows an existing link (`ln -s` onto a link to a folder writes a link into
+# the shared folder), and a link that another start made first is accepted.
+aa_link_to() { # target dst
+  ln -sn "$1" "$2" 2>/dev/null && return 0
+  [[ -L $2 && $(readlink "$2") == "$1" ]]
+}
+
 aa_link_entries() {
   local provider=$1 home=$2 shared entry name
   shared=$(aa_default_home "$provider")
@@ -135,7 +144,7 @@ aa_link_entries() {
     aa_excluded "$provider" "$name" && continue
     [[ -e $home/$name || -L $home/$name ]] && continue
     # A missing link would run the agent without that shared entry (hooks, skills).
-    ln -s "$shared/$name" "$home/$name" 2>/dev/null || return 1
+    aa_link_to "$shared/$name" "$home/$name" || [[ -e $home/$name || -L $home/$name ]] || return 1
   done
   return 0
 }
@@ -169,29 +178,58 @@ aa_claude_shared_mcp() {
     echo '{}'
 }
 
+# The names of the shared MCP servers ($2, a JSON object) that the
+# .claude.json $1 lacks or defines another way, joined by ", ". Fails when $1
+# is not a JSON object or its mcpServers is not an object.
+aa_claude_mcp_missing() {
+  jq -er --argjson m "$2" '
+    if type != "object" then error("not an object") else . end
+    | (.mcpServers // {}) as $h
+    | if ($h | type) != "object" then error("mcpServers is not an object") else . end
+    | [$m | to_entries[] | select($h[.key] != .value) | .key] | join(", ")' "$1" 2>/dev/null
+}
+
 # Merge the user-scope MCP servers of ~/.claude.json into the account's
 # .claude.json: a server of ~/.claude.json is added, or replaced when its
 # definition differs; a server that only the account has is kept (a server
-# removed from ~/.claude.json stays in the account: `check` lists it). A
-# running session of the account also writes that file, so it is rewritten
-# only when a server is missing or different.
+# removed from ~/.claude.json stays in the account: `check` lists it).
+# A running session of the account also writes that file, so it is rewritten
+# only when a server is missing or different, from a copy, and only when the
+# file still equals that copy just before the rename (else it tries again).
+# Exit 1, with a message, when the file cannot be read or written.
 aa_claude_sync_mcp() {
-  local dst="$1/.claude.json" want names tmp
-  [[ -r $dst ]] || return 0
+  local home=$1 dst="$1/.claude.json" want names snap tmp try
+  [[ -e $dst ]] || return 0
   want=$(aa_claude_shared_mcp)
   [[ $want == "{}" ]] && return 0
-  names=$(jq -r --argjson m "$want" '(.mcpServers // {}) as $h
-    | [$m | to_entries[] | select($h[.key] != .value) | .key] | join(", ")' "$dst" 2>/dev/null) ||
-    return 0
-  [[ -n $names ]] || return 0
-  tmp=$(mktemp "$1/.claude.json.XXXXXX") || return 0
-  chmod 600 "$tmp"
-  if jq --argjson m "$want" '.mcpServers = ((.mcpServers // {}) + $m)' "$dst" >"$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$dst"
-    aa_say "$dst: MCP servers added or updated: $names"
-  else
-    rm -f "$tmp"
-  fi
+  for try in 1 2 3; do
+    snap=$(mktemp "$home/.claude.json.XXXXXX") || { aa_say "cannot write in $home"; return 1; }
+    tmp=$(mktemp "$home/.claude.json.XXXXXX") || { rm -f "$snap"; aa_say "cannot write in $home"; return 1; }
+    chmod 600 "$snap" "$tmp"
+    if ! cp "$dst" "$snap" || ! names=$(aa_claude_mcp_missing "$snap" "$want"); then
+      rm -f "$snap" "$tmp"
+      aa_say "$dst is not valid JSON or its mcpServers is not an object; MCP servers not synced"
+      return 1
+    fi
+    if [[ -z $names ]]; then
+      rm -f "$snap" "$tmp"
+      return 0
+    fi
+    if ! jq --argjson m "$want" '.mcpServers = ((.mcpServers // {}) + $m)' "$snap" >"$tmp" 2>/dev/null; then
+      rm -f "$snap" "$tmp"
+      aa_say "cannot update $dst; MCP servers not synced"
+      return 1
+    fi
+    if cmp -s "$snap" "$dst"; then
+      rm -f "$snap"
+      mv -f "$tmp" "$dst" || { rm -f "$tmp"; aa_say "cannot replace $dst"; return 1; }
+      aa_say "$dst: MCP servers added or updated: $names"
+      return 0
+    fi
+    rm -f "$snap" "$tmp"
+  done
+  aa_say "$dst kept changing (a running session writes it); MCP servers not synced, try again"
+  return 1
 }
 
 # Entries of ~/.claude that every Claude account must link. Claude Code can
@@ -201,10 +239,11 @@ aa_claude_sync_mcp() {
 # folder.
 AA_CLAUDE_SHARED="settings.json plugins"
 
-# <path>.bak.<date-time>, with a number added when that name exists.
+# <path>.bak.<date-time>.<pid>: two starts at the same second never pick the
+# same name. A number is added when that name exists.
 aa_backup_path() {
   local base path n=1
-  base="$1.bak.$(date +%Y%m%d-%H%M%S)"
+  base="$1.bak.$(date +%Y%m%d-%H%M%S).$$"
   path=$base
   while [[ -e $path || -L $path ]]; do
     path="$base.$n"
@@ -215,7 +254,8 @@ aa_backup_path() {
 
 # Make each AA_CLAUDE_SHARED entry of the account a link to
 # $HOME/.claude/<entry>. What is there instead (a file, a folder, a link to
-# somewhere else) is moved to a backup first, never deleted.
+# somewhere else) is moved to a backup first, never deleted. When another
+# start of the same account did it first, its link is accepted.
 aa_claude_link_shared() {
   local home=$1 shared name target dst bak
   shared=$(aa_default_home claude)
@@ -226,23 +266,76 @@ aa_claude_link_shared() {
     [[ -L $dst && $(readlink "$dst") == "$target" ]] && continue
     if [[ -e $dst || -L $dst ]]; then
       bak=$(aa_backup_path "$dst")
-      mv "$dst" "$bak" || return 1
-      if ! ln -s "$target" "$dst"; then
-        mv "$bak" "$dst"
+      if ! mv "$dst" "$bak" 2>/dev/null; then
+        aa_link_to "$target" "$dst" || return 1
+        continue
+      fi
+      # Another start can have put its link in place between the check and
+      # the mv: that link is in $bak now, and it is not a backup.
+      if [[ -L $bak && $(readlink "$bak") == "$target" ]]; then
+        rm -f "$bak"
+        aa_link_to "$target" "$dst" || return 1
+        continue
+      fi
+      if ! aa_link_to "$target" "$dst"; then
+        [[ -e $dst || -L $dst ]] || mv "$bak" "$dst"
         return 1
       fi
       aa_say "$dst was the account's own; moved it to $bak and linked $target"
     else
-      ln -s "$target" "$dst" || return 1
+      aa_link_to "$target" "$dst" || return 1
     fi
   done
   return 0
 }
 
+# One refresh of a home at a time: several agents of one account often start
+# together, and two backups of one settings.json must not cross. The lock is
+# a folder (mkdir is atomic, and bash 3.2 on macOS has no flock) with the pid
+# of its owner. A lock whose owner is gone is taken over. Waits up to 10 s.
+aa_lock() { # home
+  local lock="$1/.agent-account.lock" pid="" tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    # No lock there: its owner just removed it (try again), or the home is
+    # not writable (fail now).
+    if [[ ! -d $lock ]]; then
+      [[ -w $1 ]] || return 1
+      continue
+    fi
+    pid=""
+    [[ -r $lock/pid ]] && IFS= read -r pid <"$lock/pid"
+    # No pid yet: the owner is between its mkdir and its write; wait 2 s.
+    if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null || { [[ -z $pid ]] && ((tries >= 20)); }; then
+      rm -rf "$lock"
+      continue
+    fi
+    tries=$((tries + 1))
+    if ((tries > 100)); then
+      aa_say "$lock is held by pid ${pid:-unknown}; if no agent-account or agent start runs, remove it"
+      return 1
+    fi
+    sleep 0.1
+  done
+  echo $$ >"$lock/pid"
+}
+
+aa_unlock() { rm -rf "$1/.agent-account.lock"; }
+
 # Bring an account home up to date: links, and for Claude its .claude.json.
+# Exit 1: the home cannot be prepared. Exit 2: the home is ready, but its MCP
+# servers are not synced (the message says why); the shim still starts.
 aa_refresh() {
+  local rc
+  [[ $1 == cursor ]] && return 0
+  aa_lock "$2" || return 1
+  aa_refresh_locked "$@"
+  rc=$?
+  aa_unlock "$2"
+  return $rc
+}
+
+aa_refresh_locked() {
   local provider=$1 home=$2
-  [[ $provider == cursor ]] && return 0
   aa_link_entries "$provider" "$home" || return 1
   if [[ $provider == claude ]]; then
     aa_claude_link_shared "$home" || return 1
@@ -251,7 +344,7 @@ aa_refresh() {
       return 0
     fi
     aa_claude_seed "$home" || return 1
-    aa_claude_sync_mcp "$home" || return 1
+    aa_claude_sync_mcp "$home" || return 2
   fi
   return 0
 }

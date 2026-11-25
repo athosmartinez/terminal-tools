@@ -353,9 +353,95 @@ check "sync of default does nothing" "nothing to sync" "$("$AA" sync claude defa
 "$AA" sync claude ghost >/dev/null 2>&1
 check_eq "sync of an unknown account exits 1" 1 $?
 "$AA" check codex >/dev/null 2>&1
-check_eq "check covers claude only" 1 $?
+check_eq "check covers claude only (exit 2: a bad call)" 2 $?
 "$AA" check claude ghost >/dev/null 2>&1
-check_eq "check of an unknown account exits 1" 1 $?
+check_eq "check of an unknown account exits 2" 2 $?
+
+# A .claude.json that sync cannot read: sync and check both fail, the shim
+# still starts the agent and says why.
+cp "$H/.claude.json" "$WORK/account.json"
+for bad in '' '{"broken' '{"mcpServers": []}'; do
+  printf '%s' "$bad" >"$H/.claude.json"
+  out=$("$AA" sync claude work 2>&1)
+  check_eq "sync with a .claude.json of '$bad' exits 1" 1 $?
+  check_true "sync with a .claude.json of '$bad' does not say in sync" test "${out#*in sync}" == "$out"
+  out=$("$AA" check claude work)
+  check_eq "check with a .claude.json of '$bad' exits 1" 1 $?
+  check "check with a .claude.json of '$bad' says to repair it" "repair it by hand" "$out"
+  check_eq "check with a .claude.json of '$bad' says no MCP ok" "$out" "${out/ok     MCP/}"
+done
+out=$(claude 2>&1)
+check "shim: an unreadable .claude.json still starts the agent" "real-claude CLAUDE_CONFIG_DIR=$H" "$out"
+check "shim: and says the MCP servers are not synced" "MCP servers not synced" "$out"
+cat "$WORK/account.json" >"$H/.claude.json"
+
+# A running session writes .claude.json while the sync merges: the sync never
+# replaces the file with a copy older than that write. A fake cmp makes the
+# session write just before the compare.
+mkdir -p "$WORK/fakecmp"
+cat >"$WORK/fakecmp/cmp" <<FAKE
+#!/usr/bin/env bash
+n=\$(cat "$WORK/cmp-count" 2>/dev/null || echo 0); echo \$((n + 1)) >"$WORK/cmp-count"
+if (( n < \${CMP_WRITES:-0} )); then
+  jq ".session = \$((n + 1))" "\$3" >"\$3.w" && cat "\$3.w" >"\$3" && rm -f "\$3.w"
+fi
+exec /usr/bin/cmp "\$@"
+FAKE
+chmod +x "$WORK/fakecmp/cmp"
+jq '.mcpServers.four = {"command": "four"}' "$HOME/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$HOME/.claude.json"
+rm -f "$WORK/cmp-count"
+PATH=$WORK/fakecmp:$PATH CMP_WRITES=1 "$AA" sync claude work >/dev/null 2>&1
+check_eq "sync: a write during the merge is kept, and the merge is done again" '1 true' \
+  "$(jq -r '[.session, (.mcpServers | has("four"))] | map(tostring) | join(" ")' "$H/.claude.json")"
+rm -f "$WORK/cmp-count"
+jq 'del(.session) | del(.mcpServers.four)' "$H/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$H/.claude.json"
+out=$(PATH=$WORK/fakecmp:$PATH CMP_WRITES=9 "$AA" sync claude work 2>&1)
+check_eq "sync: a file that keeps changing exits 1" 1 $?
+check_eq "sync: a file that keeps changing is not replaced" '3 false' \
+  "$(jq -r '[.session, (.mcpServers | has("four"))] | map(tostring) | join(" ")' "$H/.claude.json")"
+check "sync: says the file kept changing" "kept changing" "$out"
+check_true "sync: leaves no .claude.json temp file" test -z "$(ls -A "$H" | grep '^\.claude\.json\.')"
+rm -f "$WORK/cmp-count"
+jq 'del(.session)' "$H/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$H/.claude.json"
+"$AA" sync claude work >/dev/null 2>&1
+
+# Several starts of one account at the same time, on a home that still has its
+# own settings.json and plugins folder, and with a new shared folder to link:
+# every start runs, the account's file is in one backup, and no start writes
+# a link into the shared ~/.claude.
+par_failed=0
+for round in 1 2 3 4 5; do
+  rm -rf "$H/settings.json" "$H/plugins" "$H/newdir"
+  echo "{\"round\":$round}" >"$H/settings.json"
+  mkdir "$H/plugins"
+  mkdir -p "$HOME/.claude/newdir"
+  pids=""
+  for i in 1 2 3 4; do
+    claude >"$WORK/par.$i" 2>&1 &
+    pids="$pids $!"
+  done
+  rcs=""
+  for pid in $pids; do
+    wait "$pid"
+    rcs="$rcs$?"
+  done
+  if [[ $rcs != 0000 ]]; then
+    fail "parallel starts, round $round" "exit codes $rcs: $(cat "$WORK"/par.*)"
+    par_failed=1
+  elif [[ $(readlink "$H/settings.json") != "$HOME/.claude/settings.json" ]]; then
+    fail "parallel starts, round $round" "settings.json is not the link"
+    par_failed=1
+  elif [[ $(cat "$H"/settings.json.bak.* 2>/dev/null) != "{\"round\":$round}" ]]; then
+    fail "parallel starts, round $round" "the backups hold: $(cat "$H"/settings.json.bak.* 2>/dev/null)"
+    par_failed=1
+  fi
+  rm -rf "$H"/*.bak.*
+done
+check_eq "parallel starts: every start runs, one backup holds the account's file" 0 "$par_failed"
+check_eq "parallel starts: no link written into the shared plugins folder" "" \
+  "$(ls -A "$HOME/.claude/plugins" | grep -v installed_plugins.json)"
+check_eq "parallel starts: no link written into a new shared folder" "" "$(ls -A "$HOME/.claude/newdir")"
+rm -rf "$HOME/.claude/newdir" "$H/newdir"
 
 # --- labels and tags --------------------------------------------------------------
 

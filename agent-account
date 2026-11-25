@@ -46,8 +46,8 @@ Usage: agent-account <command>
                                       (the account's own goes to a backup), MCP
                                       servers. No provider = claude and codex
   check [claude [<id|label>]]         what each Claude account lacks from
-                                      ~/.claude and ~/.claude.json; exit 1 when
-                                      sync has something to fix
+                                      ~/.claude and ~/.claude.json; exit 1 for
+                                      drift or an error line, 2 for a bad call
 
 Providers: claude, codex, cursor. Account "default" is the normal home
 (~/.claude, ~/.codex, Cursor's own login).
@@ -215,13 +215,22 @@ cmd_list() {
   done
 }
 
+# aa_refresh, or die when the home cannot be prepared. MCP servers that could
+# not be synced only warn (aa_refresh exit 2 has printed why).
+prepare() { # provider home [extra text]
+  aa_refresh "$1" "$2"
+  case $? in
+    0 | 2) return 0 ;;
+    *) die "could not prepare $2 (links or .claude.json)${3:+; $3}" ;;
+  esac
+}
+
 cmd_use() {
   local provider=${1:-} name dir tmp who
   need_provider "$provider"
   name=$(resolve_account "$provider" "${2:-}") || exit 1
   if [[ $name != default ]]; then
-    aa_refresh "$provider" "$(aa_home "$provider" "$name")" ||
-      die "could not prepare $(aa_home "$provider" "$name"); the active account is unchanged"
+    prepare "$provider" "$(aa_home "$provider" "$name")" "the active account is unchanged"
   fi
   dir="$(aa_root)/$provider"
   mkdir -p "$dir" || die "cannot create $dir"
@@ -312,7 +321,7 @@ cmd_add() {
     (umask 077 && mkdir -p "$home") || die "cannot create $home"
     echo "$provider account '$name' created: $home"
   fi
-  aa_refresh "$provider" "$home" || die "could not prepare $home (links or .claude.json)"
+  prepare "$provider" "$home"
   apply_meta "$provider" "$name"
   login_hint "$provider" "$name" "$home"
 }
@@ -361,7 +370,7 @@ cmd_login() {
       save_cursor_key "$home"
       return
     fi
-    aa_refresh "$provider" "$home" || die "could not prepare $home (links or .claude.json)"
+    prepare "$provider" "$home"
     export "$var=$home"
   fi
   case $provider in
@@ -470,12 +479,18 @@ cmd_sync() {
         continue
       fi
       home=$(aa_home "$p" "$name")
-      if aa_refresh "$p" "$home"; then
-        echo "$p $name: in sync ($home)"
-      else
-        echo "$p $name: could not prepare $home" >&2
-        rc=1
-      fi
+      aa_refresh "$p" "$home"
+      case $? in
+        0) echo "$p $name: in sync ($home)" ;;
+        2)
+          echo "$p $name: links done, MCP servers not synced ($home)" >&2
+          rc=1
+          ;;
+        *)
+          echo "$p $name: could not prepare $home" >&2
+          rc=1
+          ;;
+      esac
     done
   done
   return $rc
@@ -485,16 +500,23 @@ cmd_sync() {
 join_lines() { paste -sd, - | sed 's/,/, /g'; }
 
 # Report, for each Claude account, what differs from ~/.claude and
-# ~/.claude.json. Exit 1 when sync has something to fix. Reads only: it never
+# ~/.claude.json. Exit 1 when sync has something to fix (or a .claude.json
+# that sync cannot read), 2 for a bad call. Reads only: it never
 # changes a home.
 cmd_check() {
   local provider=${1:-claude} arg=${2:-} shared want names name home dst target
-  local entry entry_name missing own drift=0 file have extra
-  need_provider "$provider"
-  [[ $provider == claude ]] || die "check covers claude only (codex and cursor have no shared settings to compare)"
+  local entry entry_name missing own drift=0 broken=0 file extra
+  if ! aa_valid_provider "$provider"; then
+    echo "agent-account: unknown provider '$provider' (use claude, codex or cursor)" >&2
+    exit 2
+  fi
+  if [[ $provider != claude ]]; then
+    echo "agent-account: check covers claude only (codex and cursor have no shared settings to compare)" >&2
+    exit 2
+  fi
   shared=$(aa_default_home claude)
   want=$(aa_claude_shared_mcp)
-  names=$(target_accounts claude "$arg") || exit 1
+  names=$(target_accounts claude "$arg") || exit 2
   [[ -n $names ]] || { echo "claude: no account other than default"; return 0; }
   for name in $names; do
     if [[ $name == default ]]; then
@@ -540,14 +562,17 @@ cmd_check() {
     fi
     [[ -n $own ]] && echo "  info   the account's own entries, not shared: $(printf '%s' "$own" | join_lines)"
     file="$home/.claude.json"
-    if ! have=$(jq -c '.mcpServers // {} | if type == "object" then . else {} end' "$file" 2>/dev/null); then
+    if [[ ! -e $file ]]; then
       drift=1
-      echo "  DRIFT  $file is missing or not valid JSON"
+      echo "  DRIFT  $file is missing"
       continue
     fi
-    missing=$(jq -rn --argjson m "$want" --argjson h "$have" \
-      '[$m | to_entries[] | select($h[.key] != .value) | .key] | join(", ")')
-    extra=$(jq -rn --argjson m "$want" --argjson h "$have" '[$h | keys[] | select($m[.] == null)] | join(", ")')
+    if ! missing=$(aa_claude_mcp_missing "$file" "$want"); then
+      broken=1
+      echo "  ERROR  $file is not a JSON object, or its mcpServers is not an object: sync cannot fix it, repair it by hand"
+      continue
+    fi
+    extra=$(jq -r --argjson m "$want" '[.mcpServers // {} | keys[] | select($m[.] == null)] | join(", ")' "$file")
     if [[ -n $missing ]]; then
       drift=1
       echo "  DRIFT  MCP servers of ~/.claude.json missing or different: $missing"
@@ -556,10 +581,8 @@ cmd_check() {
     fi
     [[ -n $extra ]] && echo "  info   MCP servers only in this account (sync keeps them): $extra"
   done
-  if ((drift)); then
-    echo "Fix with: agent-account sync claude${arg:+ $arg}"
-    return 1
-  fi
+  ((drift)) && echo "Fix with: agent-account sync claude${arg:+ $arg}"
+  ((drift || broken)) && return 1
   return 0
 }
 
