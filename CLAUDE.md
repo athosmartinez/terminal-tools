@@ -68,7 +68,17 @@ other people and holds nothing private:
     change of a linked entry reaches every account. An entry that exists in
     the account home is never overwritten.
   - The account's `.claude.json` is rewritten (tmp + `mv`, mode 600) only
-    when `mcpServers` differs: a running session writes the same file.
+    when a shared MCP server is missing or different: a running session
+    writes the same file. The shared servers are merged in (`+`), never
+    replace the account's `mcpServers`: a server that only the account has
+    stays.
+  - `settings.json` and `plugins` (`AA_CLAUDE_SHARED`) must be links:
+    Claude Code writes its own copy into a new home before the links exist,
+    and `aa_link_entries` skips an existing entry. `aa_claude_link_shared`
+    moves what is there to `<name>.bak.<date-time>` (never deletes it) and
+    links. With the right link it does nothing, so a start makes no backup.
+  - `check` only reads; `sync` runs `aa_refresh` on every home, for the
+    sessions that skip the shim (a preset `CLAUDE_CONFIG_DIR`).
   - The CLI ignores `CLAUDE_CONFIG_DIR` / `CODEX_HOME` from its own env: it
     often runs inside an agent session.
   - The Codex `id_token` is decoded inside jq; only email, account id and

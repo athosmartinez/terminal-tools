@@ -15,7 +15,8 @@
 # Account "default" runs the real binary unchanged. Any other account runs it
 # with CLAUDE_CONFIG_DIR / CODEX_HOME set to the account's home, after the
 # home gets links to new entries of ~/.claude or ~/.codex (and, for Claude,
-# the user-scope MCP servers of ~/.claude.json); for Cursor, with
+# links for settings.json and plugins, and the user-scope MCP servers of
+# ~/.claude.json merged in); for Cursor, with
 # CURSOR_API_KEY read from the account's api-key file. An account without a
 # home (or a Cursor account without a key) is an error: the shim never falls
 # back to another account.

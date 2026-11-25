@@ -383,10 +383,18 @@ The registry lives in `$AGENT_ACCOUNTS_HOME` (default
 - Claude: the home links every entry of `~/.claude` except `.claude.json`
   and `.credentials.json`. Its own `.claude.json` starts as a copy of
   `~/.claude.json` without the account identity (`oauthAccount`, `userID`).
-  At every start the shim copies the user-scope MCP servers (`mcpServers` of
-  `~/.claude.json`) into it, and links entries that appeared in `~/.claude`.
+  At every start the shim links entries that appeared in `~/.claude`, and
+  merges the user-scope MCP servers (`mcpServers` of `~/.claude.json`) into
+  it: a missing or different server takes the shared definition, and a server
+  that only the account has stays (`check` lists it).
   On macOS, Claude Code keeps the login in the Keychain, in an item named after
   the home path: if you move a home, log in again.
+- Claude: `settings.json` and `plugins` are always links to `~/.claude`.
+  Claude Code can write its own copy into a new home before the links exist
+  (at the first login, or with `/config`); that account then runs without your
+  hooks, env and plugins. The shim, `add`, `use` and `sync` move such a copy
+  to `<name>.bak.<date-time>` in the home and put the link in its place. They
+  never delete it.
 - Codex: the home links every entry of `~/.codex` except `auth.json`,
   `auth.json.lock` and `auth.lock`. The sessions are shared, so `codex resume`
   works in every account.
@@ -406,7 +414,14 @@ agent-account login <provider> <id>     # log in to it (interactive)
 agent-account use <provider> <id|label> # new sessions use it; "default" goes back
 agent-account env <provider> [<id>]     # CLAUDE_CONFIG_DIR=... / CODEX_HOME=... / CURSOR_API_KEY_FILE=...
 agent-account remove <provider> <id> [--yes]
+agent-account sync [<provider> [<id>]]  # update the homes now, as the shim does at a start
+agent-account check [claude [<id>]]     # what each Claude account lacks from ~/.claude; exit 1 = drift
 ```
+
+A session that sets `CLAUDE_CONFIG_DIR` itself skips the shim, so its home
+is not updated at the start. Run `agent-account check claude` to see the
+drift of each account (`DRIFT` lines need a sync, `info` lines do not), and
+`agent-account sync claude` to fix it.
 
 `<provider>` is `claude`, `codex` or `cursor`. To add an account:
 
