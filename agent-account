@@ -210,6 +210,10 @@ cmd_use() {
   local provider=${1:-} name dir tmp who
   need_provider "$provider"
   name=$(resolve_account "$provider" "${2:-}") || exit 1
+  if [[ $name != default ]]; then
+    aa_refresh "$provider" "$(aa_home "$provider" "$name")" ||
+      die "could not prepare $(aa_home "$provider" "$name"); the active account is unchanged"
+  fi
   dir="$(aa_root)/$provider"
   mkdir -p "$dir" || die "cannot create $dir"
   tmp=$(mktemp "$dir/.active.XXXXXX") || die "cannot write in $dir"

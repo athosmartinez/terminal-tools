@@ -194,12 +194,58 @@ aa_claude_sync_mcp() {
   fi
 }
 
+# Entries of ~/.claude that every Claude account must link. Claude Code can
+# write them into a new home before its links exist (a login, /config), and
+# aa_link_entries leaves an existing entry alone: the account then runs with
+# its own settings (no hooks, no env, no enabled plugins) and an empty plugin
+# folder.
+AA_CLAUDE_SHARED="settings.json plugins"
+
+# <path>.bak.<date-time>, with a number added when that name exists.
+aa_backup_path() {
+  local base path n=1
+  base="$1.bak.$(date +%Y%m%d-%H%M%S)"
+  path=$base
+  while [[ -e $path || -L $path ]]; do
+    path="$base.$n"
+    n=$((n + 1))
+  done
+  echo "$path"
+}
+
+# Make each AA_CLAUDE_SHARED entry of the account a link to
+# $HOME/.claude/<entry>. What is there instead (a file, a folder, a link to
+# somewhere else) is moved to a backup first, never deleted.
+aa_claude_link_shared() {
+  local home=$1 shared name target dst bak
+  shared=$(aa_default_home claude)
+  for name in $AA_CLAUDE_SHARED; do
+    target="$shared/$name"
+    dst="$home/$name"
+    [[ -e $target || -L $target ]] || continue
+    [[ -L $dst && $(readlink "$dst") == "$target" ]] && continue
+    if [[ -e $dst || -L $dst ]]; then
+      bak=$(aa_backup_path "$dst")
+      mv "$dst" "$bak" || return 1
+      if ! ln -s "$target" "$dst"; then
+        mv "$bak" "$dst"
+        return 1
+      fi
+      aa_say "$dst was the account's own; moved it to $bak and linked $target"
+    else
+      ln -s "$target" "$dst" || return 1
+    fi
+  done
+  return 0
+}
+
 # Bring an account home up to date: links, and for Claude its .claude.json.
 aa_refresh() {
   local provider=$1 home=$2
   [[ $provider == cursor ]] && return 0
   aa_link_entries "$provider" "$home" || return 1
   if [[ $provider == claude ]]; then
+    aa_claude_link_shared "$home" || return 1
     if ! command -v jq >/dev/null 2>&1; then
       echo "agent-account: jq not found; $home/.claude.json is not updated" >&2
       return 0

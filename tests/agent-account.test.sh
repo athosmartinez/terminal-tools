@@ -40,8 +40,9 @@ export PATH=$WORK/shims:$WORK/real:$PATH
 
 # A shared ~/.claude: a file, a folder, a dotfile, an entry that is itself a
 # link to somewhere else, and the login file that must stay apart.
-mkdir -p "$HOME/.claude/skills"
-echo '{}' >"$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude/skills" "$HOME/.claude/plugins"
+echo '{"hooks":{}}' >"$HOME/.claude/settings.json"
+echo '{"plugins":{"p@m":[]}}' >"$HOME/.claude/plugins/installed_plugins.json"
 echo x >"$HOME/.claude/.hidden"
 echo x >"$HOME/.claude/.credentials.json"
 echo '# shared' >"$WORK/elsewhere/CLAUDE.md"
@@ -272,6 +273,46 @@ claude >/dev/null 2>&1
 check_eq "launch: no mcpServers in ~/.claude.json removes nothing" '["mine","one","two"]' \
   "$(jq -c '.mcpServers | keys' "$H/.claude.json")"
 cat "$WORK/shared.json" >"$HOME/.claude.json"
+
+# settings.json and plugins: what the account has instead of the link moves
+# to a backup, and the link takes its place; a second launch does nothing.
+rm "$H/settings.json" "$H/plugins"
+echo '{"theme":"auto"}' >"$H/settings.json"
+chmod 644 "$H/settings.json"
+mkdir "$H/plugins" && echo own >"$H/plugins/own.txt"
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: a plain settings.json becomes the link" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check_eq "launch: a plugins folder of the account becomes the link" "$HOME/.claude/plugins" "$(readlink "$H/plugins")"
+bak=$(ls -d "$H"/settings.json.bak.* 2>/dev/null)
+check_eq "launch: the backup keeps the account's settings" '{"theme":"auto"}' "$(cat "$bak" 2>/dev/null)"
+check_eq "launch: the backup keeps the mode" 644 "$(mode "$bak")"
+check_eq "launch: the plugins backup keeps its files" own "$(cat "$H"/plugins.bak.*/own.txt 2>/dev/null)"
+check "launch: the shim says where the backup is" "moved it to $bak and linked $HOME/.claude/settings.json" "$out"
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: the right links make no backup" 2 "$(ls -d "$H"/*.bak.* | wc -l | tr -d ' ')"
+check_eq "launch: the right links print nothing" "" "$out"
+rm -rf "$H"/*.bak.*
+
+ln -sfn "$WORK/elsewhere/CLAUDE.md" "$H/settings.json"
+claude >/dev/null 2>&1
+check_eq "launch: a link to another place becomes the link" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check_eq "launch: the other link is kept as the backup" "$WORK/elsewhere/CLAUDE.md" "$(readlink "$H"/settings.json.bak.*)"
+rm -f "$H"/settings.json.bak.*
+
+mv "$HOME/.claude/settings.json" "$WORK/shared-settings.json"
+rm "$H/settings.json" && echo '{"own":1}' >"$H/settings.json"
+claude >/dev/null 2>&1
+check_true "launch: no shared settings.json leaves the account's file" test -f "$H/settings.json" -a ! -L "$H/settings.json"
+check_eq "launch: no shared settings.json makes no backup" "" "$(ls -d "$H"/settings.json.bak.* 2>/dev/null)"
+mv "$WORK/shared-settings.json" "$HOME/.claude/settings.json"
+
+# use prepares the home too: a session started by another path (one that sets
+# CLAUDE_CONFIG_DIR itself) then gets the links.
+"$AA" use claude default >/dev/null
+out=$("$AA" use claude work 2>&1)
+check_eq "use: links settings.json" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check "use: says where the backup is" "settings.json.bak." "$out"
+rm -f "$H"/settings.json.bak.*
 
 # --- labels and tags --------------------------------------------------------------
 
