@@ -40,8 +40,9 @@ export PATH=$WORK/shims:$WORK/real:$PATH
 
 # A shared ~/.claude: a file, a folder, a dotfile, an entry that is itself a
 # link to somewhere else, and the login file that must stay apart.
-mkdir -p "$HOME/.claude/skills"
-echo '{}' >"$HOME/.claude/settings.json"
+mkdir -p "$HOME/.claude/skills" "$HOME/.claude/plugins"
+echo '{"hooks":{}}' >"$HOME/.claude/settings.json"
+echo '{"plugins":{"p@m":[]}}' >"$HOME/.claude/plugins/installed_plugins.json"
 echo x >"$HOME/.claude/.hidden"
 echo x >"$HOME/.claude/.credentials.json"
 echo '# shared' >"$WORK/elsewhere/CLAUDE.md"
@@ -242,7 +243,7 @@ touch "$HOME/.claude/new-entry" "$HOME/.claude/own.json" "$HOME/.codex/new-entry
 echo '{"mine":true}' >"$H/own.json"
 jq '.mcpServers.two = {"command": "two"} | .oauthAccount.emailAddress = "z@example.com"' \
   "$HOME/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$HOME/.claude.json"
-claude >/dev/null
+claude >/dev/null 2>&1
 codex >/dev/null
 check_eq "launch: a new claude entry is linked" "$HOME/.claude/new-entry" "$(readlink "$H/new-entry")"
 check_eq "launch: a new codex entry is linked" "$HOME/.codex/new-entry" "$(readlink "$C/new-entry")"
@@ -252,6 +253,195 @@ check_eq "launch: mcpServers reaches the account" '{"one":{"command":"one"},"two
 check_eq "launch: oauthAccount is not copied" b@example.com "$(jq -r .oauthAccount.emailAddress "$H/.claude.json")"
 check_eq "launch: .claude.json keeps mode 600" 600 "$(mode "$H/.claude.json")"
 check_true "launch: no .claude.json temp file is left" test -z "$(ls -A "$H" | grep '^\.claude\.json\.')"
+
+# The account's own MCP server stays; a shared server with another
+# definition in the account takes the shared one; nothing to add = no write.
+jq '.mcpServers.mine = {"command": "mine"} | .mcpServers.two = {"command": "old"}' \
+  "$H/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$H/.claude.json"
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: the account's own MCP server is kept, the shared definition wins" \
+  '{"mine":{"command":"mine"},"one":{"command":"one"},"two":{"command":"two"}}' \
+  "$(jq -cS .mcpServers "$H/.claude.json")"
+check "launch: the shim names the MCP servers it changed" "MCP servers added or updated: two" "$out"
+before=$(inode "$H/.claude.json")
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: nothing to add leaves .claude.json alone" "$before" "$(inode "$H/.claude.json")"
+check_eq "launch: nothing to add prints nothing" "" "$out"
+jq 'del(.mcpServers)' "$HOME/.claude.json" >"$WORK/t" && cp "$HOME/.claude.json" "$WORK/shared.json" &&
+  cat "$WORK/t" >"$HOME/.claude.json"
+claude >/dev/null 2>&1
+check_eq "launch: no mcpServers in ~/.claude.json removes nothing" '["mine","one","two"]' \
+  "$(jq -c '.mcpServers | keys' "$H/.claude.json")"
+cat "$WORK/shared.json" >"$HOME/.claude.json"
+
+# settings.json and plugins: what the account has instead of the link moves
+# to a backup, and the link takes its place; a second launch does nothing.
+rm "$H/settings.json" "$H/plugins"
+echo '{"theme":"auto"}' >"$H/settings.json"
+chmod 644 "$H/settings.json"
+mkdir "$H/plugins" && echo own >"$H/plugins/own.txt"
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: a plain settings.json becomes the link" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check_eq "launch: a plugins folder of the account becomes the link" "$HOME/.claude/plugins" "$(readlink "$H/plugins")"
+bak=$(ls -d "$H"/settings.json.bak.* 2>/dev/null)
+check_eq "launch: the backup keeps the account's settings" '{"theme":"auto"}' "$(cat "$bak" 2>/dev/null)"
+check_eq "launch: the backup keeps the mode" 644 "$(mode "$bak")"
+check_eq "launch: the plugins backup keeps its files" own "$(cat "$H"/plugins.bak.*/own.txt 2>/dev/null)"
+check "launch: the shim says where the backup is" "moved it to $bak and linked $HOME/.claude/settings.json" "$out"
+out=$(claude 2>&1 >/dev/null)
+check_eq "launch: the right links make no backup" 2 "$(ls -d "$H"/*.bak.* | wc -l | tr -d ' ')"
+check_eq "launch: the right links print nothing" "" "$out"
+rm -rf "$H"/*.bak.*
+
+ln -sfn "$WORK/elsewhere/CLAUDE.md" "$H/settings.json"
+claude >/dev/null 2>&1
+check_eq "launch: a link to another place becomes the link" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check_eq "launch: the other link is kept as the backup" "$WORK/elsewhere/CLAUDE.md" "$(readlink "$H"/settings.json.bak.*)"
+rm -f "$H"/settings.json.bak.*
+
+mv "$HOME/.claude/settings.json" "$WORK/shared-settings.json"
+rm "$H/settings.json" && echo '{"own":1}' >"$H/settings.json"
+claude >/dev/null 2>&1
+check_true "launch: no shared settings.json leaves the account's file" test -f "$H/settings.json" -a ! -L "$H/settings.json"
+check_eq "launch: no shared settings.json makes no backup" "" "$(ls -d "$H"/settings.json.bak.* 2>/dev/null)"
+mv "$WORK/shared-settings.json" "$HOME/.claude/settings.json"
+
+# use prepares the home too: a session started by another path (one that sets
+# CLAUDE_CONFIG_DIR itself) then gets the links.
+"$AA" use claude default >/dev/null
+out=$("$AA" use claude work 2>&1)
+check_eq "use: links settings.json" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check "use: says where the backup is" "settings.json.bak." "$out"
+rm -f "$H"/settings.json.bak.*
+
+# --- check and sync ---------------------------------------------------------------
+
+out=$("$AA" check claude work)
+check_eq "check: a home in sync exits 0" 0 $?
+check "check: names the right settings link" "ok     settings.json links $HOME/.claude/settings.json" "$out"
+check "check: lists the account's own MCP server as info" \
+  "MCP servers only in this account (sync keeps them): mine" "$out"
+
+rm "$H/settings.json" "$H/new-entry" && echo '{"theme":"auto"}' >"$H/settings.json"
+mkdir "$HOME/.claude/own-dir" "$H/own-dir"
+jq '.mcpServers.three = {"command": "three"}' "$HOME/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$HOME/.claude.json"
+before="$(inode "$H/settings.json") $(inode "$H/.claude.json")"
+out=$("$AA" check claude work)
+check_eq "check: drift exits 1" 1 $?
+check "check: a plain settings.json is drift" "DRIFT  settings.json is the account's own file" "$out"
+check "check: a shared entry not linked yet is drift" "not linked yet: new-entry" "$out"
+check "check: a missing shared MCP server is drift" "missing or different: three" "$out"
+check "check: an own entry is info" "own entries, not shared: own-dir" "$out"
+check "check: says how to fix it" "Fix with: agent-account sync claude work" "$out"
+check_eq "check changes nothing" "$before" "$(inode "$H/settings.json") $(inode "$H/.claude.json")"
+check_true "check makes no backup" test -z "$(ls -d "$H"/*.bak.* 2>/dev/null)"
+
+touch "$HOME/.codex/newer-entry"
+out=$("$AA" sync 2>&1)
+check_eq "sync with no provider exits 0" 0 $?
+check "sync: reports each account" "claude work: in sync ($H)" "$out"
+check "sync: reports the codex accounts too" "codex work: in sync ($C)" "$out"
+check_eq "sync: links settings.json" "$HOME/.claude/settings.json" "$(readlink "$H/settings.json")"
+check_eq "sync: links a new codex entry" "$HOME/.codex/newer-entry" "$(readlink "$C/newer-entry")"
+check_eq "sync: adds the shared MCP server, keeps the own one" '["mine","one","three","two"]' \
+  "$(jq -c '.mcpServers | keys' "$H/.claude.json")"
+"$AA" check claude >/dev/null
+check_eq "check after sync exits 0" 0 $?
+rm -rf "$H"/*.bak.* "$H/own-dir" "$HOME/.claude/own-dir"
+check "sync cursor has nothing to do" "nothing to sync" "$("$AA" sync cursor)"
+check "sync of default does nothing" "nothing to sync" "$("$AA" sync claude default)"
+"$AA" sync claude ghost >/dev/null 2>&1
+check_eq "sync of an unknown account exits 1" 1 $?
+"$AA" check codex >/dev/null 2>&1
+check_eq "check covers claude only (exit 2: a bad call)" 2 $?
+"$AA" check claude ghost >/dev/null 2>&1
+check_eq "check of an unknown account exits 2" 2 $?
+
+# A .claude.json that sync cannot read: sync and check both fail, the shim
+# still starts the agent and says why.
+cp "$H/.claude.json" "$WORK/account.json"
+for bad in '' '{"broken' '{"mcpServers": []}'; do
+  printf '%s' "$bad" >"$H/.claude.json"
+  out=$("$AA" sync claude work 2>&1)
+  check_eq "sync with a .claude.json of '$bad' exits 1" 1 $?
+  check_true "sync with a .claude.json of '$bad' does not say in sync" test "${out#*in sync}" == "$out"
+  out=$("$AA" check claude work)
+  check_eq "check with a .claude.json of '$bad' exits 1" 1 $?
+  check "check with a .claude.json of '$bad' says to repair it" "repair it by hand" "$out"
+  check_eq "check with a .claude.json of '$bad' says no MCP ok" "$out" "${out/ok     MCP/}"
+done
+out=$(claude 2>&1)
+check "shim: an unreadable .claude.json still starts the agent" "real-claude CLAUDE_CONFIG_DIR=$H" "$out"
+check "shim: and says the MCP servers are not synced" "MCP servers not synced" "$out"
+cat "$WORK/account.json" >"$H/.claude.json"
+
+# A running session writes .claude.json while the sync merges: the sync never
+# replaces the file with a copy older than that write. A fake cmp makes the
+# session write just before the compare.
+mkdir -p "$WORK/fakecmp"
+cat >"$WORK/fakecmp/cmp" <<FAKE
+#!/usr/bin/env bash
+n=\$(cat "$WORK/cmp-count" 2>/dev/null || echo 0); echo \$((n + 1)) >"$WORK/cmp-count"
+if (( n < \${CMP_WRITES:-0} )); then
+  jq ".session = \$((n + 1))" "\$3" >"\$3.w" && cat "\$3.w" >"\$3" && rm -f "\$3.w"
+fi
+exec /usr/bin/cmp "\$@"
+FAKE
+chmod +x "$WORK/fakecmp/cmp"
+jq '.mcpServers.four = {"command": "four"}' "$HOME/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$HOME/.claude.json"
+rm -f "$WORK/cmp-count"
+PATH=$WORK/fakecmp:$PATH CMP_WRITES=1 "$AA" sync claude work >/dev/null 2>&1
+check_eq "sync: a write during the merge is kept, and the merge is done again" '1 true' \
+  "$(jq -r '[.session, (.mcpServers | has("four"))] | map(tostring) | join(" ")' "$H/.claude.json")"
+rm -f "$WORK/cmp-count"
+jq 'del(.session) | del(.mcpServers.four)' "$H/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$H/.claude.json"
+out=$(PATH=$WORK/fakecmp:$PATH CMP_WRITES=9 "$AA" sync claude work 2>&1)
+check_eq "sync: a file that keeps changing exits 1" 1 $?
+check_eq "sync: a file that keeps changing is not replaced" '3 false' \
+  "$(jq -r '[.session, (.mcpServers | has("four"))] | map(tostring) | join(" ")' "$H/.claude.json")"
+check "sync: says the file kept changing" "kept changing" "$out"
+check_true "sync: leaves no .claude.json temp file" test -z "$(ls -A "$H" | grep '^\.claude\.json\.')"
+rm -f "$WORK/cmp-count"
+jq 'del(.session)' "$H/.claude.json" >"$WORK/t" && cat "$WORK/t" >"$H/.claude.json"
+"$AA" sync claude work >/dev/null 2>&1
+
+# Several starts of one account at the same time, on a home that still has its
+# own settings.json and plugins folder, and with a new shared folder to link:
+# every start runs, the account's file is in one backup, and no start writes
+# a link into the shared ~/.claude.
+par_failed=0
+for round in 1 2 3 4 5; do
+  rm -rf "$H/settings.json" "$H/plugins" "$H/newdir"
+  echo "{\"round\":$round}" >"$H/settings.json"
+  mkdir "$H/plugins"
+  mkdir -p "$HOME/.claude/newdir"
+  pids=""
+  for i in 1 2 3 4; do
+    claude >"$WORK/par.$i" 2>&1 &
+    pids="$pids $!"
+  done
+  rcs=""
+  for pid in $pids; do
+    wait "$pid"
+    rcs="$rcs$?"
+  done
+  if [[ $rcs != 0000 ]]; then
+    fail "parallel starts, round $round" "exit codes $rcs: $(cat "$WORK"/par.*)"
+    par_failed=1
+  elif [[ $(readlink "$H/settings.json") != "$HOME/.claude/settings.json" ]]; then
+    fail "parallel starts, round $round" "settings.json is not the link"
+    par_failed=1
+  elif [[ $(cat "$H"/settings.json.bak.* 2>/dev/null) != "{\"round\":$round}" ]]; then
+    fail "parallel starts, round $round" "the backups hold: $(cat "$H"/settings.json.bak.* 2>/dev/null)"
+    par_failed=1
+  fi
+  rm -rf "$H"/*.bak.*
+done
+check_eq "parallel starts: every start runs, one backup holds the account's file" 0 "$par_failed"
+check_eq "parallel starts: no link written into the shared plugins folder" "" \
+  "$(ls -A "$HOME/.claude/plugins" | grep -v installed_plugins.json)"
+check_eq "parallel starts: no link written into a new shared folder" "" "$(ls -A "$HOME/.claude/newdir")"
+rm -rf "$HOME/.claude/newdir" "$H/newdir"
 
 # --- labels and tags --------------------------------------------------------------
 
