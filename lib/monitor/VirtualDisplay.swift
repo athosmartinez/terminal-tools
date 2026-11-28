@@ -86,24 +86,27 @@ final class VirtualDisplay {
 
     /// Moves the display beside its anchor. WindowServer adds a new display a
     /// moment after `turnOn` returns, so the caller runs this a little later
-    /// and again when the set of displays changes.
-    func place(_ config: MonitorConfig) throws {
-        guard let id = displayID else { return }
+    /// and again when the set of displays changes. Returns false when the
+    /// display is not active yet: while a monitor is plugged in or out,
+    /// WindowServer leaves the virtual display out of the list for a moment,
+    /// so the caller tries again.
+    @discardableResult
+    func place(_ config: MonitorConfig) throws -> Bool {
+        guard let id = displayID else { return true }
         let active = try DisplayToggle.displays(online: false)
-        guard active.contains(where: { $0.id == id }) else {
-            throw DisplayToggleError(description: "the virtual display is not active")
-        }
         // With no real display active, the virtual one is the whole desktop:
-        // every window is on a screen that nobody can see.
+        // every window is on a screen that nobody can see. This comes first:
+        // the virtual display can be out of the list at the same time.
         guard let anchor = Self.anchor(active) else {
             turnOff()
             throw DisplayToggleError(description: "no real display is active — virtual display turned off")
         }
+        guard active.contains(where: { $0.id == id }) else { return false }
         let bounds = CGDisplayBounds(id)
         let real = active.filter { !$0.isVirtual }.map { CGDisplayBounds($0.id) }
         let wanted = Self.origin(anchor: CGDisplayBounds(anchor), real: real, width: bounds.width,
                                  side: config.virtualSide, y: config.virtualY)
-        guard bounds.origin != wanted else { return }
+        guard bounds.origin != wanted else { return true }
 
         var configuration: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&configuration) == .success else {
@@ -118,6 +121,7 @@ final class VirtualDisplay {
         guard CGCompleteDisplayConfiguration(configuration, .permanently) == .success else {
             throw DisplayToggleError(description: "cannot apply display configuration")
         }
+        return true
     }
 
     // MARK: rules (pure)
@@ -136,6 +140,22 @@ final class VirtualDisplay {
             ? real.reduce(anchor.maxX) { max($0, $1.maxX) }
             : real.reduce(anchor.minX) { min($0, $1.minX) } - width
         return CGPoint(x: x, y: anchor.minY + CGFloat(y))
+    }
+
+    /// What the app does after a placement that failed.
+    enum PlacementRetry: Equatable { case again, recreate, stop }
+
+    /// The failure is a false result of `place` (the display is not in the
+    /// active list yet) or an error (WindowServer can refuse a configuration
+    /// while it settles); both get the same attempts. `exists` is false when
+    /// `place` released the object because no real display is active: there
+    /// is nothing to retry. After the last attempt the app makes the display
+    /// again, once (`recreated`): WindowServer can drop the display and keep
+    /// the object, and a new object comes back listed.
+    static func afterFailedPlacement(attempt: Int, attempts: Int, exists: Bool, recreated: Bool) -> PlacementRetry {
+        guard exists else { return .stop }
+        if attempt < attempts { return .again }
+        return recreated ? .stop : .recreate
     }
 
     // macOS uses the physical size only to choose a default scale. 92 pixels
@@ -288,6 +308,15 @@ enum Moonlight {
                       width: size.width, height: size.height)
     }
 
+    /// True when a Moonlight window that the user sent to the virtual display
+    /// is not there now. macOS moves windows off a display that leaves the
+    /// list, also for a moment while a monitor is plugged in or out, and does
+    /// not move them back. No window (nil) also counts: the window was lost.
+    static func leftVirtual(window: CGRect?, virtual: CGRect) -> Bool {
+        guard let window else { return true }
+        return !virtual.contains(CGPoint(x: window.midX, y: window.midY))
+    }
+
     /// AppKit counts y up from the bottom of the primary screen. Displays and
     /// the Accessibility API count y down from its top.
     static func global(cocoa rect: CGRect, primaryHeight: CGFloat) -> CGRect {
@@ -295,8 +324,133 @@ enum Moonlight {
     }
 }
 
-/// The main window of another app, read and moved through the Accessibility
-/// API. The user must allow MonitorBar in Privacy & Security > Accessibility.
+/// A window as the window server lists it. `bounds` is in global coordinates,
+/// y down, the same space as `CGDisplayBounds` and the Accessibility API.
+struct ListedWindow: Equatable {
+    let number: CGWindowID
+    let pid: pid_t
+    let layer: Int
+    let alpha: Double
+    let bounds: CGRect
+}
+
+/// The windows of other apps that land on the virtual display, where nobody
+/// sees them, and where they go back to. Only a Moonlight stream belongs there.
+enum WindowRescue {
+    /// Automatic attempts per window. An app can put a moved window back, so
+    /// every attempt counts, also one that moved the window: a window that
+    /// keeps coming back stops after this many moves and gets the badge.
+    static let attempts = 3
+
+    /// The on-screen windows. Detection needs no Accessibility grant. A window
+    /// on a Space that is not shown (for example the desktop Space of the
+    /// virtual display behind a full screen Moonlight) is not on screen.
+    static func onScreen() -> [ListedWindow] {
+        listed(CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? [])
+    }
+
+    /// The entries of `CGWindowListCopyWindowInfo`. An entry with no number,
+    /// owner or bounds is dropped.
+    static func listed(_ info: [[String: Any]]) -> [ListedWindow] {
+        info.compactMap { entry in
+            guard let number = (entry[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  let raw = entry[kCGWindowBounds as String], CFGetTypeID(raw as CFTypeRef) == CFDictionaryGetTypeID(),
+                  let bounds = CGRect(dictionaryRepresentation: raw as! CFDictionary) else { return nil }
+            return ListedWindow(number: number, pid: pid,
+                                layer: (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0,
+                                alpha: (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1,
+                                bounds: bounds)
+        }
+    }
+
+    /// The windows to take off the virtual display: layer 0 (menus, the Dock
+    /// and overlays have other layers), visible, with their middle on the
+    /// virtual display, and not of Moonlight or of MonitorBar. A Moonlight
+    /// window is never moved by itself: it only gets a warning.
+    static func stranded(_ windows: [ListedWindow], virtual: CGRect, moonlight: Set<pid_t>, own: pid_t) -> [ListedWindow] {
+        windows.filter { window in
+            window.layer == 0 && window.alpha > 0 && !window.bounds.isEmpty
+                && !moonlight.contains(window.pid) && window.pid != own
+                && virtual.contains(CGPoint(x: window.bounds.midX, y: window.bounds.midY))
+        }
+    }
+
+    /// The windows that get an automatic attempt now.
+    static func due(_ stranded: [ListedWindow], tried: [CGWindowID: Int]) -> [ListedWindow] {
+        stranded.filter { tried[$0.number, default: 0] < attempts }
+    }
+
+    /// The number of every window that exists, also off screen (minimized,
+    /// hidden, on another Space). Only for `pruned`: this list also holds
+    /// hidden helper windows, which must never count as stranded.
+    static func existing() -> Set<CGWindowID> {
+        Set(listed(CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []).map(\.number))
+    }
+
+    /// The counts of the windows that still exist. A count is kept while its
+    /// window exists, also after the window left the virtual display or the
+    /// screen: the window can come back, and a count that starts again is a loop.
+    static func pruned(_ tried: [CGWindowID: Int], existing: Set<CGWindowID>) -> [CGWindowID: Int] {
+        tried.filter { existing.contains($0.key) }
+    }
+
+    /// Where the windows go: the main display (the one with the menu bar),
+    /// else the display that the virtual one sits beside.
+    static func target(main: CGDirectDisplayID, active: [DisplayInfo]) -> CGDirectDisplayID? {
+        active.first { $0.id == main && !$0.isVirtual }?.id ?? VirtualDisplay.anchor(active)
+    }
+
+    /// The window on `visible`, the usable area of the target display. It
+    /// keeps its size when that fits, and shrinks to fit when not. It keeps
+    /// its relative place: a window in the top left corner of the virtual
+    /// display goes to the top left corner, so several windows do not land
+    /// on top of each other. A window as wide as the virtual display (or
+    /// wider) is centered on that axis.
+    static func frame(window: CGRect, virtual: CGRect, visible: CGRect) -> CGRect {
+        let size = CGSize(width: min(window.width, visible.width), height: min(window.height, visible.height))
+        func share(_ offset: CGFloat, _ room: CGFloat) -> CGFloat {
+            room > 0 ? min(max(offset / room, 0), 1) : 0.5
+        }
+        let x = share(window.minX - virtual.minX, virtual.width - window.width)
+        let y = share(window.minY - virtual.minY, virtual.height - window.height)
+        return CGRect(x: (visible.minX + x * (visible.width - size.width)).rounded(),
+                      y: (visible.minY + y * (visible.height - size.height)).rounded(),
+                      width: size.width, height: size.height)
+    }
+
+    /// True when an Accessibility frame is the listed window. The two lists
+    /// can round a fraction of a point differently.
+    static func matches(_ frame: CGRect, _ bounds: CGRect) -> Bool {
+        abs(frame.minX - bounds.minX) <= 1 && abs(frame.minY - bounds.minY) <= 1
+            && abs(frame.width - bounds.width) <= 1 && abs(frame.height - bounds.height) <= 1
+    }
+}
+
+/// A flag that one thread sets and another thread reads. The main thread
+/// cancels a rescue pass; the rescue queue reads the flag before each window
+/// and before each frame request, and stops the pass.
+final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
+/// A window of another app (its main window, or one found by its frame), read
+/// and moved through the Accessibility API. The user must allow MonitorBar in
+/// Privacy & Security > Accessibility.
 enum AppWindow {
     /// Throws when the permission is missing, after macOS shows its request.
     /// The grant belongs to one build of the app: an ad-hoc signature changes
@@ -315,16 +469,28 @@ enum AppWindow {
     }
 
     /// The frame in global coordinates: y grows down from the top of the main display.
-    static func frame(pid: pid_t) throws -> CGRect {
-        let window = try mainWindow(pid)
+    /// `timeout` is the wait for each AX call in seconds; nil keeps the default.
+    static func frame(pid: pid_t, timeout: Float? = nil) throws -> CGRect {
+        try currentFrame(mainWindow(pid, timeout: timeout))
+    }
+
+    /// The frame from the two Accessibility values. A value that the read did
+    /// not give (nil, the call failed or timed out) or that has another type
+    /// is an error. A frame of zeros in its place looks like a window with no
+    /// size, and two failed reads look like a window that is at rest.
+    static func frame(position: AXValue?, size: AXValue?) throws -> CGRect {
         var origin = CGPoint.zero
-        var size = CGSize.zero
-        guard let position = value(window, kAXPositionAttribute), AXValueGetValue(position, .cgPoint, &origin),
-              let extent = value(window, kAXSizeAttribute), AXValueGetValue(extent, .cgSize, &size) else {
+        var extent = CGSize.zero
+        guard let position, AXValueGetValue(position, .cgPoint, &origin),
+              let size, AXValueGetValue(size, .cgSize, &extent) else {
             throw DisplayToggleError(description: "cannot read the window frame")
         }
-        return CGRect(origin: origin, size: size)
+        return CGRect(origin: origin, size: extent)
     }
+
+    /// True when a frame can be asked for: a window with no width or no
+    /// height is never the goal of a move.
+    static func hasSize(_ frame: CGRect) -> Bool { frame.width > 0 && frame.height > 0 }
 
     static func isFullScreen(pid: pid_t) throws -> Bool { isFullScreen(try mainWindow(pid)) }
 
@@ -335,38 +501,59 @@ enum AppWindow {
     @discardableResult
     static func setFrame(pid: pid_t, _ frame: CGRect, fullScreen: Bool? = nil,
                          trace: (String) -> Void = { _ in }) throws -> CGRect {
-        let window = try mainWindow(pid)
+        try setFrame(try mainWindow(pid), fullScreen: fullScreen, trace: trace) { _ in frame }
+    }
+
+    /// The same for one window. `target` gets the frame that the window has
+    /// out of full screen and gives the new one: a window in full screen has
+    /// the frame of its display until it leaves full screen. `cancelled` is
+    /// read before each frame request, before each of its writes and in each
+    /// wait: a true value ends the move with an error.
+    @discardableResult
+    static func setFrame(_ window: AXUIElement, fullScreen: Bool? = nil, cancelled: () -> Bool = { false },
+                         trace: (String) -> Void = { _ in }, target: (CGRect) -> CGRect) throws -> CGRect {
         // A window in native full screen has a Space of its own and refuses a
         // position. It leaves full screen, moves, and enters full screen again
         // on the display where it is then.
         let wasFullScreen = isFullScreen(window)
-        var start = settledFrame(window)
-        trace("window at \(start), full screen \(wasFullScreen), target \(frame)")
+        // A wait with no valid read throws here, before a target is computed from it.
+        var start = try settledFrame(window, cancelled: cancelled)
+        trace("window at \(start), full screen \(wasFullScreen)")
         if wasFullScreen {
-            try leaveFullScreen(window)
-            start = settledFrame(window)
+            if cancelled() { throw moveCancelled }
+            try leaveFullScreen(window, cancelled: cancelled)
+            start = try settledFrame(window, cancelled: cancelled)
             trace("left full screen, window at \(start)")
+        }
+        // The exit from full screen takes some seconds.
+        if cancelled() { throw moveCancelled }
+        let frame = target(start)
+        trace("target \(frame)")
+        guard hasSize(frame) else {
+            throw DisplayToggleError(description: "the target frame \(frame) has no size")
         }
         // A window that still ends a transition (out of full screen, out of a
         // zoom) ignores a request and reports no error, so the frame is read
         // back and the request is sent again until the window moves.
-        var result = try apply(frame, to: window)
+        var result = try apply(frame, to: window, cancelled: cancelled)
         var attempt = 1
         while result.origin == start.origin, start.origin != frame.origin, attempt < transitionAttempts {
             attempt += 1
             trace("the window did not move, attempt \(attempt)")
             usleep(500_000)
-            result = try apply(frame, to: window)
+            if cancelled() { throw moveCancelled }
+            result = try apply(frame, to: window, cancelled: cancelled)
         }
         trace("window at \(result)")
         if fullScreen ?? wasFullScreen {
             // The same rule for the way into full screen.
             for _ in 0..<transitionAttempts {
+                if cancelled() { throw moveCancelled }
                 _ = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanTrue)
                 usleep(500_000)
                 if isFullScreen(window) { break }
             }
-            result = settledFrame(window)
+            result = try settledFrame(window, cancelled: cancelled)
             trace("full screen \(isFullScreen(window)), window at \(result)")
         }
         return result
@@ -375,7 +562,12 @@ enum AppWindow {
     // 6 attempts, 0.5 s apart: a full screen animation takes about 1 s.
     private static let transitionAttempts = 6
 
-    private static func apply(_ frame: CGRect, to window: AXUIElement) throws -> CGRect {
+    private static let moveCancelled = DisplayToggleError(description: "the move was cancelled")
+
+    // `cancelled` is read before each of the three writes: each one can wait
+    // for the AX timeout, and a cancel during the first one must not move the
+    // window to a target that is stale.
+    private static func apply(_ frame: CGRect, to window: AXUIElement, cancelled: () -> Bool) throws -> CGRect {
         var origin = frame.origin
         var size = frame.size
         guard let position = AXValueCreate(.cgPoint, &origin), let extent = AXValueCreate(.cgSize, &size) else {
@@ -384,34 +576,60 @@ enum AppWindow {
         // Size, position, size: macOS cuts a window that grows past the edge of
         // its current display, so the size is set again on the new display. A
         // window of fixed size refuses the size, and that is not an error.
+        if cancelled() { throw moveCancelled }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
+        if cancelled() { throw moveCancelled }
         let err = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
         guard err == .success else {
             throw DisplayToggleError(description: "cannot move the window (AXError \(err.rawValue))")
         }
+        if cancelled() { throw moveCancelled }
         _ = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, extent)
-        return settledFrame(window)
+        return try settledFrame(window, cancelled: cancelled)
     }
 
-    private static func currentFrame(_ window: AXUIElement) -> CGRect {
-        var origin = CGPoint.zero
-        var size = CGSize.zero
-        if let position = value(window, kAXPositionAttribute) { AXValueGetValue(position, .cgPoint, &origin) }
-        if let extent = value(window, kAXSizeAttribute) { AXValueGetValue(extent, .cgSize, &size) }
-        return CGRect(origin: origin, size: size)
+    private static func currentFrame(_ window: AXUIElement) throws -> CGRect {
+        try frame(position: value(window, kAXPositionAttribute), size: value(window, kAXSizeAttribute))
     }
 
     // A frame change and a full screen change are animations. The frame is
-    // settled when two reads, 150 ms apart, agree; the wait ends after 3 s.
-    private static func settledFrame(_ window: AXUIElement) -> CGRect {
-        var last = currentFrame(window)
-        for _ in 0..<20 {
-            usleep(150_000)
-            let now = currentFrame(window)
-            if now == last { return now }
-            last = now
+    // settled when two reads, 150 ms apart, agree. A read can fail for a
+    // moment while the window leaves full screen, so it is read again.
+    private static func settledFrame(_ window: AXUIElement, cancelled: () -> Bool) throws -> CGRect {
+        try settled(cancelled: cancelled) { try currentFrame(window) }
+    }
+
+    /// The frame at rest: two valid reads one after the other that agree. A
+    /// read that throws is skipped, and the next valid read is compared with
+    /// the last valid one; a failed read is never a frame, because two frames
+    /// of zeros looked like a window at rest. The wait ends after `tries`
+    /// reads or `time` seconds from the first read, with the last valid read;
+    /// with no valid read it throws the error of the last read. The time limit
+    /// is there because a read that does not answer waits for the AX timeout.
+    /// `cancelled` is read before each pause: a true value throws.
+    static func settled(tries: Int = 21, time: TimeInterval = 3, cancelled: () -> Bool = { false },
+                        now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                        pause: () -> Void = { _ = usleep(150_000) },
+                        read: () throws -> CGRect) throws -> CGRect {
+        let start = now()
+        var last: CGRect?
+        var failure: Error?
+        for attempt in 0..<tries {
+            if attempt > 0 {
+                if now() - start >= time { break }
+                if cancelled() { throw moveCancelled }
+                pause()
+            }
+            do {
+                let frame = try read()
+                if frame == last { return frame }
+                last = frame
+            } catch {
+                failure = error
+            }
         }
-        return last
+        if let last { return last }
+        throw failure ?? DisplayToggleError(description: "cannot read the window frame")
     }
 
     // AppKit has no constant for it.
@@ -422,13 +640,16 @@ enum AppWindow {
     }
 
     // Leaving full screen is an animation: the call returns at once, and the
-    // window takes a position only when the animation ends.
-    private static func leaveFullScreen(_ window: AXUIElement) throws {
+    // window takes a position only when the animation ends. `cancelled` is
+    // read before each check: with the rescue's 1 s timeout, 50 checks of two
+    // calls each can hold the queue for about 100 s.
+    private static func leaveFullScreen(_ window: AXUIElement, cancelled: () -> Bool) throws {
         let err = AXUIElementSetAttributeValue(window, fullScreenAttribute as CFString, kCFBooleanFalse)
         guard err == .success else {
             throw DisplayToggleError(description: "cannot take the window out of full screen (AXError \(err.rawValue))")
         }
         for _ in 0..<50 {
+            if cancelled() { throw moveCancelled }
             usleep(100_000)
             var settable: DarwinBoolean = false
             _ = AXUIElementIsAttributeSettable(window, kAXPositionAttribute as CFString, &settable)
@@ -437,13 +658,41 @@ enum AppWindow {
         throw DisplayToggleError(description: "the window did not leave full screen")
     }
 
-    private static func mainWindow(_ pid: pid_t) throws -> AXUIElement {
+    // The check reads the frame on the main thread, also at every menu open:
+    // an app that does not answer must not freeze the menu for the default
+    // wait of about 6 s per call. A move keeps the default: a window in a full
+    // screen transition can answer late, and the move was verified with it.
+    static let checkTimeout: Float = 1
+
+    /// The window of `pid` whose frame is `bounds`, the frame of a listed
+    /// window. Every Accessibility call on it then waits at most `timeout`.
+    /// `cancelled` is read before each window: each read can wait `timeout`.
+    static func window(pid: pid_t, bounds: CGRect, timeout: Float,
+                       cancelled: () -> Bool = { false }) throws -> AXUIElement {
         let app = AXUIElementCreateApplication(pid)
-        if let main = copy(app, kAXMainWindowAttribute), CFGetTypeID(main) == AXUIElementGetTypeID() {
-            return unsafeDowncast(main, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        for item in (copy(app, kAXWindowsAttribute) as? [AnyObject]) ?? [] where CFGetTypeID(item) == AXUIElementGetTypeID() {
+            if cancelled() { throw moveCancelled }
+            let window = unsafeDowncast(item, to: AXUIElement.self)
+            AXUIElementSetMessagingTimeout(window, timeout)
+            // A window that does not answer is not the match; another can be.
+            if let frame = try? currentFrame(window), WindowRescue.matches(frame, bounds) { return window }
         }
-        if let first = (copy(app, kAXWindowsAttribute) as? [AnyObject])?.first, CFGetTypeID(first) == AXUIElementGetTypeID() {
-            return unsafeDowncast(first, to: AXUIElement.self)
+        throw DisplayToggleError(description: "no Accessibility window of the app has the frame \(bounds)")
+    }
+
+    private static func mainWindow(_ pid: pid_t, timeout: Float? = nil) throws -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        if let timeout { AXUIElementSetMessagingTimeout(app, timeout) }
+        var window: AXUIElement?
+        if let main = copy(app, kAXMainWindowAttribute), CFGetTypeID(main) == AXUIElementGetTypeID() {
+            window = unsafeDowncast(main, to: AXUIElement.self)
+        } else if let first = (copy(app, kAXWindowsAttribute) as? [AnyObject])?.first, CFGetTypeID(first) == AXUIElementGetTypeID() {
+            window = unsafeDowncast(first, to: AXUIElement.self)
+        }
+        if let window {
+            if let timeout { AXUIElementSetMessagingTimeout(window, timeout) }
+            return window
         }
         throw DisplayToggleError(description: "the app has no window to move")
     }
